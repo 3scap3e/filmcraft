@@ -14,6 +14,7 @@ pub struct PanelsState {
     pub reference: ReferenceState,
     pub events: EventsState,
     pub progress: ProgressState,
+    pub reverse_engineering: ReverseEngineeringState,
 }
 
 /// Lumetri Scopes settings (the wrench / right-click menu and the footer).
@@ -225,5 +226,38 @@ pub struct ProgressState {
 impl Default for ProgressState {
     fn default() -> Self {
         ProgressState { show_finished: true }
+    }
+}
+
+/// A frozen source-frame request, separate from the editable project.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct ReverseEngineeringState {
+    pub capture: Option<ReverseEngineeringCapture>,
+    pub range_mode: bool,
+    pub range_clip: Option<filmcraft_project::ClipId>,
+    pub start_frame: i64,
+    pub end_frame: i64,
+    #[serde(default = "default_sample_interval")]
+    pub sample_interval: i64,
+    pub samples: Vec<ReverseEngineeringCapture>,
+}
+
+fn default_sample_interval() -> i64 {
+    30
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReverseEngineeringCapture {
+    pub item: filmcraft_project::ItemId,
+    pub media_time: filmcraft_time::Tick,
+    pub timeline_time: filmcraft_time::Tick,
+    pub name: String,
+}
+
+impl Default for ReverseEngineeringState {
+    fn default() -> Self {
+        Self { capture: None, range_mode: false, range_clip: None, start_frame: 0, end_frame: 0, sample_interval: 30, samples: Vec::new() }
     }
 }

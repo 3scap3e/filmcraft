@@ -22,6 +22,13 @@ macro_rules! uic {
 }
 
 pub const UI_COMMANDS: &[UiCommand] = &[
+    uic!("reverseEngineering.extractFrame", "Extract Current Frame", [], None),
+    uic!("reverseEngineering.extractRange", "Extract Frame Range", [], None),
+    uic!("reverseEngineering.setRange", "Set Video Range", [], None),
+    uic!("reverseEngineering.playRange", "Replay Selected Video Range", [], None),
+    uic!("reverseEngineering.markStart", "Set Range Start at Playhead", [], None),
+    uic!("reverseEngineering.markEnd", "Set Range End at Playhead", [], None),
+    uic!("reverseEngineering.selectSample", "Preview Range Frame", [], None),
     uic!("window.dockAction", "Docking Action", [], None),
     uic!("window.dockPanel", "Dock Panel", [], None),
     uic!("window.floatPanel", "Undock Panel", [], None),
@@ -224,6 +231,9 @@ pub fn invoke(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut params:
         }
         ctx.request_repaint();
         return Ok(json!(app.ui.language));
+    }
+    if id.starts_with("reverseEngineering.") {
+        return crate::panels::reverse_engineering::command(app, ctx, id, &params);
     }
     if id == "file.exportFrame" {
         if params.get("target").is_none() {
