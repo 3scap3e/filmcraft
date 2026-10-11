@@ -471,6 +471,8 @@ fn reverse_engineering_shell_opens_closes_and_preserves_project() {
     use filmcraft_ui_egui::dock::{DockNode, PanelKind};
     let mut d = Driver::with(Session::default());
     let original = serde_json::to_value(&*d.app().session.project).unwrap();
+    assert!(d.app().ui.dock.is_visible(PanelKind::ReverseEngineering));
+    assert!(d.has("reverseEngineering.intro"));
     d.ok("ui.menu.invoke", json!({"id": "window.panel.ReverseEngineering"}));
     d.frames(2);
     assert!(d.app().ui.dock.is_visible(PanelKind::ReverseEngineering));
@@ -487,4 +489,21 @@ fn reverse_engineering_shell_opens_closes_and_preserves_project() {
     assert!(d.has("reverseEngineering.intro"));
     assert_eq!(serde_json::to_value(&*d.app().session.project).unwrap(), original);
     d.snapshot("panels-reverse-engineering", Some("reverseEngineering."));
+}
+
+#[test]
+fn reverse_engineering_migrates_old_layout_once_and_keeps_close_choice() {
+    use filmcraft_ui_egui::dock::{DockNode, PanelKind, SavedWorkspace, WorkspacePrefs};
+    let old = DockNode::Tabs { panels: vec![PanelKind::Source, PanelKind::Metadata], active: 0 };
+    let mut prefs = WorkspacePrefs::default();
+    prefs.saved.push(SavedWorkspace { name: "Editing".into(), layout: serde_json::to_value(old).unwrap(), ..Default::default() });
+    assert!(prefs.add_reverse_engineering());
+    let mut layout: DockNode = serde_json::from_value(prefs.saved[0].layout.clone()).unwrap();
+    assert!(layout.is_visible(PanelKind::ReverseEngineering));
+    assert!(layout.contains(PanelKind::Metadata));
+    layout.close(PanelKind::ReverseEngineering);
+    prefs.saved[0].layout = serde_json::to_value(layout.clone()).unwrap();
+    let mut restored: WorkspacePrefs = serde_json::from_str(&serde_json::to_string(&prefs).unwrap()).unwrap();
+    assert!(!restored.add_reverse_engineering());
+    assert_eq!(serde_json::from_value::<DockNode>(restored.saved[0].layout.clone()).unwrap(), layout);
 }

@@ -1,6 +1,8 @@
 # Reverse Engineering
 
-RE1 adds a native dockable panel shell. Open it with **Window → Reverse Engineering**.
+RE1 adds a native dockable panel shell. It opens by default beside **Metadata** in Editing, Assembly and All Panels. You can also open it with **Window → Reverse Engineering**.
+
+Existing saved layouts gain the new tab once. After that migration, closing the panel and saving your layout remains respected.
 It uses the existing docking, close, float and workspace-layout persistence behavior.
 Opening or closing it does not edit the media project. Analysis tools are not implemented in RE1.
 

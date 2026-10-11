@@ -192,6 +192,7 @@ pub const WORKSPACES_FILE: &str = "workspaces.json";
 pub struct WorkspacePrefs {
     pub saved: Vec<SavedWorkspace>,
     pub current: String,
+    pub reverse_engineering_added: bool,
 }
 
 /// A named layout. `layout` is a [`DockNode`] kept as JSON, so one unreadable entry (a panel a
@@ -216,10 +217,40 @@ impl WorkspacePrefs {
             file.take(MAX_BYTES + 1).read_to_end(&mut bytes).ok()?;
             (bytes.len() as u64 <= MAX_BYTES).then_some(bytes)
         }) else {
-            return Self::default();
+            return Self { reverse_engineering_added: true, ..Self::default() };
         };
-        serde_json::from_slice(&bytes).unwrap_or_default()
+        let mut prefs: Self = serde_json::from_slice(&bytes).unwrap_or_default();
+        if prefs.add_reverse_engineering() {
+            if let Err(error) = prefs.save(path) {
+                log::warn!("could not save Reverse Engineering workspace update: {error}");
+            }
+        }
+        prefs
     }
+
+    /// Add the new tab once to old saved layouts, preserving the rest of each layout.
+    /// Once migrated, a user can close the panel and save that choice normally.
+    pub fn add_reverse_engineering(&mut self) -> bool {
+        if self.reverse_engineering_added {
+            return false;
+        }
+        for saved in &mut self.saved {
+            let Ok(mut layout) = serde_json::from_value::<DockNode>(saved.layout.clone()) else { continue };
+            let floating_has_panel = serde_json::from_value::<Vec<Floating>>(saved.floating.clone())
+                .ok()
+                .is_some_and(|groups| groups.iter().any(|group| group.panels.contains(&PanelKind::ReverseEngineering)));
+            if !layout.contains(PanelKind::ReverseEngineering) && !floating_has_panel {
+                let near = if layout.contains(PanelKind::Metadata) { PanelKind::Metadata } else { PanelKind::Source };
+                layout.open_near(PanelKind::ReverseEngineering, near);
+                if let Ok(value) = serde_json::to_value(layout) {
+                    saved.layout = value;
+                }
+            }
+        }
+        self.reverse_engineering_added = true;
+        true
+    }
+
     pub fn save(&self, path: &std::path::Path) -> std::io::Result<()> {
         if let Some(d) = path.parent() {
             std::fs::create_dir_all(d)?;
@@ -321,7 +352,7 @@ pub fn workspace(name: &str) -> DockNode {
             hsplit(
                 Ratio(0.46),
                 tabs(&[Project, MediaBrowser, Libraries, Info, Effects, Markers, History], 0),
-                hsplit(Ratio(0.5), tabs(&[Source, EffectControls, AudioClipMixer, Metadata], 0), tabs(&[Program], 0)),
+                hsplit(Ratio(0.5), tabs(&[Source, EffectControls, AudioClipMixer, Metadata, ReverseEngineering], 4), tabs(&[Program], 0)),
             ),
             bottom_editing(),
         ),
@@ -365,7 +396,7 @@ pub fn workspace(name: &str) -> DockNode {
             Ratio(0.5),
             hsplit(
                 Ratio(0.5),
-                tabs(&[Source, EffectControls, AudioClipMixer, Metadata, LumetriScopes, Text], 0),
+                tabs(&[Source, EffectControls, AudioClipMixer, Metadata, ReverseEngineering, LumetriScopes, Text], 4),
                 hsplit(Ratio(0.6), tabs(&[Program], 0), tabs(&[LumetriColor, EssentialGraphics, EssentialSound, TextToSpeech, Properties, AudioTrackMixer], 0)),
             ),
             hsplit(Ratio(0.26), tabs(&[Project, MediaBrowser, Libraries, Info, Effects, Markers, History], 0), bottom_editing()),
@@ -376,7 +407,7 @@ pub fn workspace(name: &str) -> DockNode {
             Ratio(0.57),
             hsplit(
                 FixedB(450.0),
-                hsplit(Ratio(0.5), tabs(&[Source, EffectControls, AudioClipMixer, Metadata], 0), tabs(&[Program], 0)),
+                hsplit(Ratio(0.5), tabs(&[Source, EffectControls, AudioClipMixer, Metadata, ReverseEngineering], 4), tabs(&[Program], 0)),
                 tabs(&[Properties, EssentialGraphics, Text], 0),
             ),
             hsplit(
