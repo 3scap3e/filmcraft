@@ -818,6 +818,7 @@ impl FilmcraftApp {
                 | PanelKind::AudioTrackMixer
                 | PanelKind::Text
                 | PanelKind::ReferenceMonitor
+                | PanelKind::ReverseEngineering
                 | PanelKind::Timecode => PanelKind::Source,
                 _ => PanelKind::Project,
             };

@@ -37,6 +37,7 @@ pub mod project_dialogs;
 pub mod project_views;
 pub mod reference;
 pub mod remix;
+pub mod reverse_engineering;
 pub mod scopes;
 pub mod sequence_settings;
 pub mod settings;
@@ -103,6 +104,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, p: PanelKind, rect: Rect)
         PanelKind::EssentialSound => essential_sound::show(app, ui, rect),
         PanelKind::TextToSpeech => tts::show(app, ui, rect),
         PanelKind::ProjectNotes => notes::show(app, ui, rect),
+        PanelKind::ReverseEngineering => reverse_engineering::show(app, ui, rect),
         other => crate::dock::placeholder(ui, rect, &app.tokens, &tlf!("{panel} — coming in a later milestone", panel = crate::i18n::t(other.title()))),
     }
 }

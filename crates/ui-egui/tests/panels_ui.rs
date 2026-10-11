@@ -158,7 +158,7 @@ fn every_panel_opens_from_the_window_menu() {
     let menu = d.ok("ui.menu.list", json!({}));
     let window: Vec<String> =
         menu.as_array().unwrap().iter().filter(|m| m["path"] == json!(["Window"])).filter_map(|m| m["label"].as_str().map(str::to_string)).collect();
-    for p in ["Events", "Lumetri Scopes", "Metadata", "Progress", "Project Notes", "Reference Monitor", "Timecode"] {
+    for p in ["Events", "Lumetri Scopes", "Metadata", "Progress", "Project Notes", "Reference Monitor", "Reverse Engineering", "Timecode"] {
         assert!(window.iter().any(|w| w == p), "{p} not in Window: {window:?}");
     }
     for (panel, key) in [
@@ -169,6 +169,7 @@ fn every_panel_opens_from_the_window_menu() {
         ("Progress", "progress.showFinished"),
         ("ReferenceMonitor", "reference.gang"),
         ("ProjectNotes", "notes.text"),
+        ("ReverseEngineering", "reverseEngineering.intro"),
     ] {
         d.ok("ui.menu.invoke", json!({"id": format!("window.panel.{panel}")}));
         d.frames(3);
@@ -462,4 +463,28 @@ fn scopes_of_colour_bars() {
         let a = filmcraft_scopes::angle_deg(t.cb, t.cr) as f64;
         assert!(angles.iter().any(|x| (x - a).abs() < 1.5), "{} at {a:.1}° not in {angles:?}", t.name);
     }
+}
+
+/// RE1: the new shell is reachable through Window and automation without editing the project.
+#[test]
+fn reverse_engineering_shell_opens_closes_and_preserves_project() {
+    use filmcraft_ui_egui::dock::{DockNode, PanelKind};
+    let mut d = Driver::with(Session::default());
+    let original = serde_json::to_value(&*d.app().session.project).unwrap();
+    d.ok("ui.menu.invoke", json!({"id": "window.panel.ReverseEngineering"}));
+    d.frames(2);
+    assert!(d.app().ui.dock.is_visible(PanelKind::ReverseEngineering));
+    assert!(d.has("reverseEngineering.intro"));
+    let saved = serde_json::to_string(&d.app().ui.dock).unwrap();
+    let restored: DockNode = serde_json::from_str(&saved).unwrap();
+    assert!(restored.is_visible(PanelKind::ReverseEngineering));
+    d.ok("ui.panel.close", json!({"panel": "ReverseEngineering"}));
+    d.frames(2);
+    assert!(!d.app().ui.dock.contains(PanelKind::ReverseEngineering));
+    assert!(!d.has("reverseEngineering.intro"));
+    d.ok("ui.panel.show", json!({"panel": "Reverse Engineering"}));
+    d.frames(2);
+    assert!(d.has("reverseEngineering.intro"));
+    assert_eq!(serde_json::to_value(&*d.app().session.project).unwrap(), original);
+    d.snapshot("panels-reverse-engineering", Some("reverseEngineering."));
 }

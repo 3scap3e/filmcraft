@@ -40,10 +40,11 @@ pub enum PanelKind {
     ReferenceMonitor,
     Timecode,
     ProjectNotes,
+    ReverseEngineering,
 }
 
 impl PanelKind {
-    pub const ALL: [PanelKind; 28] = [
+    pub const ALL: [PanelKind; 29] = [
         PanelKind::Project,
         PanelKind::MediaBrowser,
         PanelKind::Libraries,
@@ -72,6 +73,7 @@ impl PanelKind {
         PanelKind::ReferenceMonitor,
         PanelKind::Timecode,
         PanelKind::ProjectNotes,
+        PanelKind::ReverseEngineering,
     ];
     pub fn title(self) -> &'static str {
         match self {
@@ -103,6 +105,7 @@ impl PanelKind {
             PanelKind::ReferenceMonitor => "Reference Monitor",
             PanelKind::Timecode => "Timecode",
             PanelKind::ProjectNotes => "Project Notes",
+            PanelKind::ReverseEngineering => "Reverse Engineering",
         }
     }
     pub fn id(self) -> String {
@@ -895,6 +898,21 @@ mod tests {
             assert!(d.contains(PanelKind::Timeline), "{w}");
             assert!(d.contains(PanelKind::Program), "{w}");
         }
+    }
+
+    #[test]
+    fn reverse_engineering_panel_layout_roundtrip() {
+        let panel = PanelKind::ReverseEngineering;
+        assert_eq!(PanelKind::from_name("Reverse Engineering"), Some(panel));
+        assert_eq!(PanelKind::from_name("reverse_engineering"), Some(panel));
+        let mut dock = workspace("Editing");
+        dock.open_near(panel, PanelKind::Source);
+        assert!(dock.is_visible(panel));
+        let saved = serde_json::to_string(&dock).unwrap();
+        let restored: DockNode = serde_json::from_str(&saved).unwrap();
+        assert_eq!(restored, dock);
+        dock.close(panel);
+        assert!(!dock.contains(panel));
     }
 
     #[test]
