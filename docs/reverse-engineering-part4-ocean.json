@@ -1,0 +1,308 @@
+{
+  "model": "MemorySlices/Tartan-C-T-TSKH-spring540x960-M",
+  "device": "mps",
+  "torch": "2.7.1",
+  "tests": [
+    {
+      "meanMagnitudePixels": 0.02987101674079895,
+      "waterMeanMagnitudePixels": 0.029622787609696388,
+      "case": "ocean-0043-0043",
+      "seconds": 1.177829708904028,
+      "size": [
+        640,
+        360
+      ],
+      "medianFlowPixels": [
+        0.018688563257455826,
+        0.00903457123786211
+      ],
+      "expectedPixels": [
+        0,
+        0
+      ],
+      "medianErrorPixels": 0.02725577175114686,
+      "meanErrorPixels": 0.029871017938874637
+    },
+    {
+      "meanMagnitudePixels": 0.14003264904022217,
+      "waterMeanMagnitudePixels": 0.37408968806266785,
+      "case": "ocean-0043-0044",
+      "seconds": 0.1106879161670804,
+      "size": [
+        640,
+        360
+      ],
+      "medianFlowPixels": [
+        0.03343638777732849,
+        0.0272957906126976
+      ]
+    },
+    {
+      "meanMagnitudePixels": 0.6295338869094849,
+      "waterMeanMagnitudePixels": 1.6581189632415771,
+      "case": "ocean-0043-0049",
+      "seconds": 0.1103951670229435,
+      "size": [
+        640,
+        360
+      ],
+      "medianFlowPixels": [
+        -0.18359732627868652,
+        0.020847784355282784
+      ]
+    },
+    {
+      "meanMagnitudePixels": 2.250028133392334,
+      "waterMeanMagnitudePixels": 5.037010669708252,
+      "case": "ocean-0043-0067",
+      "seconds": 0.15456175059080124,
+      "size": [
+        640,
+        360
+      ],
+      "medianFlowPixels": [
+        -0.7008404731750488,
+        0.03148098662495613
+      ]
+    }
+  ],
+  "fixture": "Ocean_Sunset.mp4 (FilmCraft procedural demo)",
+  "sourceFrames": [
+    43,
+    44,
+    49,
+    67
+  ],
+  "fps": {
+    "numerator": 24000,
+    "denominator": 1001
+  },
+  "sparseBaseline": {
+    "analyzer": "subpixel-patch-motion-v2",
+    "exportSize": [
+      640,
+      360
+    ],
+    "fixture": "Ocean_Sunset.mp4",
+    "fps": {
+      "denominator": 1001,
+      "numerator": 24000
+    },
+    "limitations": "Procedural waves change appearance; no ground-truth optical flow is available.",
+    "pairs": [
+      {
+        "analyzedSize": [
+          384,
+          216
+        ],
+        "changedPixelFraction": 0.0,
+        "fromFrame": 43,
+        "fromSourceTicks": 455567112000,
+        "meanPixelChange": 0.0,
+        "rejectedPoints": 185,
+        "seconds": 0.0005705,
+        "toFrame": 43,
+        "toSourceTicks": 455567112000,
+        "vectors": [
+          {
+            "ambiguityMargin": 11.481562614440918,
+            "from": [
+              0.49609375,
+              0.6041666865348816
+            ],
+            "meanAbsoluteError": 0.0,
+            "to": [
+              0.49609375,
+              0.6041666865348816
+            ]
+          },
+          {
+            "ambiguityMargin": 4.95046854019165,
+            "from": [
+              0.4440104067325592,
+              0.7893518805503845
+            ],
+            "meanAbsoluteError": 0.0,
+            "to": [
+              0.4440104067325592,
+              0.7893518805503845
+            ]
+          },
+          {
+            "ambiguityMargin": 4.318124771118164,
+            "from": [
+              0.4440104067325592,
+              0.8819444179534912
+            ],
+            "meanAbsoluteError": 0.0,
+            "to": [
+              0.4440104067325592,
+              0.8819444179534912
+            ]
+          },
+          {
+            "ambiguityMargin": 9.754375457763672,
+            "from": [
+              0.49609375,
+              0.8819444179534912
+            ],
+            "meanAbsoluteError": 0.0,
+            "to": [
+              0.49609375,
+              0.8819444179534912
+            ]
+          },
+          {
+            "ambiguityMargin": 5.154531478881836,
+            "from": [
+              0.5481770634651184,
+              0.8819444179534912
+            ],
+            "meanAbsoluteError": 0.0,
+            "to": [
+              0.5481770634651184,
+              0.8819444179534912
+            ]
+          }
+        ]
+      },
+      {
+        "analyzedSize": [
+          384,
+          216
+        ],
+        "changedPixelFraction": 0.019627701491117477,
+        "fromFrame": 43,
+        "fromSourceTicks": 455567112000,
+        "meanPixelChange": 0.20013578236103058,
+        "rejectedPoints": 186,
+        "seconds": 0.000476125,
+        "toFrame": 44,
+        "toSourceTicks": 466161696000,
+        "vectors": [
+          {
+            "ambiguityMargin": 6.230156421661377,
+            "from": [
+              0.49609375,
+              0.6041666865348816
+            ],
+            "meanAbsoluteError": 6.019218921661377,
+            "to": [
+              0.4969312846660614,
+              0.6038971543312073
+            ]
+          },
+          {
+            "ambiguityMargin": 3.756406307220459,
+            "from": [
+              0.4440104067325592,
+              0.7893518805503845
+            ],
+            "meanAbsoluteError": 1.998593807220459,
+            "to": [
+              0.4442245066165924,
+              0.7911068201065063
+            ]
+          },
+          {
+            "ambiguityMargin": 3.5264062881469727,
+            "from": [
+              0.49609375,
+              0.8819444179534912
+            ],
+            "meanAbsoluteError": 6.338906288146973,
+            "to": [
+              0.49560925364494324,
+              0.8835706114768982
+            ]
+          },
+          {
+            "ambiguityMargin": 6.015781402587891,
+            "from": [
+              0.5481770634651184,
+              0.8819444179534912
+            ],
+            "meanAbsoluteError": 0.6507812738418579,
+            "to": [
+              0.5480667948722839,
+              0.8854809999465942
+            ]
+          }
+        ]
+      },
+      {
+        "analyzedSize": [
+          384,
+          216
+        ],
+        "changedPixelFraction": 0.03662712126970291,
+        "fromFrame": 43,
+        "fromSourceTicks": 455567112000,
+        "meanPixelChange": 0.8886405825614929,
+        "rejectedPoints": 187,
+        "seconds": 0.000439292,
+        "toFrame": 49,
+        "toSourceTicks": 519134616000,
+        "vectors": [
+          {
+            "ambiguityMargin": 3.845625162124634,
+            "from": [
+              0.4440104067325592,
+              0.7893518805503845
+            ],
+            "meanAbsoluteError": 1.9831249713897705,
+            "to": [
+              0.4442175328731537,
+              0.7969352602958679
+            ]
+          },
+          {
+            "ambiguityMargin": 4.941719055175781,
+            "from": [
+              0.49609375,
+              0.8819444179534912
+            ],
+            "meanAbsoluteError": 3.0857813358306885,
+            "to": [
+              0.5077596306800842,
+              0.895961344242096
+            ]
+          },
+          {
+            "ambiguityMargin": 6.152031421661377,
+            "from": [
+              0.5481770634651184,
+              0.8819444179534912
+            ],
+            "meanAbsoluteError": 1.025781273841858,
+            "to": [
+              0.5481289029121399,
+              0.895261287689209
+            ]
+          }
+        ]
+      },
+      {
+        "analyzedSize": [
+          384,
+          216
+        ],
+        "changedPixelFraction": 0.0580512136220932,
+        "fromFrame": 43,
+        "fromSourceTicks": 455567112000,
+        "meanPixelChange": 1.7235643863677979,
+        "rejectedPoints": 190,
+        "seconds": 0.000339083,
+        "toFrame": 67,
+        "toSourceTicks": 709837128000,
+        "vectors": []
+      }
+    ],
+    "procedural": true
+  },
+  "limitations": [
+    "No ground-truth flow exists for the procedural demo.",
+    "Dense and sparse measurements have different resolution and coverage; magnitudes are not directly comparable.",
+    "Timings are a single run, not sustained throughput."
+  ]
+}

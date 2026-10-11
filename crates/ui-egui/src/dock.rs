@@ -220,10 +220,10 @@ impl WorkspacePrefs {
             return Self { reverse_engineering_added: true, ..Self::default() };
         };
         let mut prefs: Self = serde_json::from_slice(&bytes).unwrap_or_default();
-        if prefs.add_reverse_engineering() {
-            if let Err(error) = prefs.save(path) {
-                log::warn!("could not save Reverse Engineering workspace update: {error}");
-            }
+        if prefs.add_reverse_engineering()
+            && let Err(error) = prefs.save(path)
+        {
+            log::warn!("could not save Reverse Engineering workspace update: {error}");
         }
         prefs
     }

@@ -22,6 +22,14 @@ macro_rules! uic {
 }
 
 pub const UI_COMMANDS: &[UiCommand] = &[
+    uic!("reverseEngineering.analyzeMotion", "Analyze Range Motion", [], None),
+    uic!("reverseEngineering.cancelMotion", "Cancel Motion Analysis", [], None),
+    uic!("reverseEngineering.motionPair", "Inspect Motion Frame", [], None),
+    uic!("reverseEngineering.motionFrame", "Jump to Analyzed Frame", [], None),
+    uic!("reverseEngineering.reanalyzeFrame", "Reanalyze Selected Frame Motion", [], None),
+    uic!("reverseEngineering.exportMotion", "Export Motion JSON", [], None),
+    uic!("reverseEngineering.setMotionDisplay", "Set Motion Display Settings", [], None),
+    uic!("reverseEngineering.inspectMotionVector", "Inspect Model Motion Sample", [], None),
     uic!("reverseEngineering.extractFrame", "Extract Current Frame", [], None),
     uic!("reverseEngineering.extractRange", "Extract Frame Range", [], None),
     uic!("reverseEngineering.setRange", "Set Video Range", [], None),

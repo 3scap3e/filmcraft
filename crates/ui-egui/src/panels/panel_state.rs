@@ -241,6 +241,7 @@ pub struct ReverseEngineeringState {
     #[serde(default = "default_sample_interval")]
     pub sample_interval: i64,
     pub samples: Vec<ReverseEngineeringCapture>,
+    pub motion: Option<super::reverse_motion::MotionReport>,
 }
 
 fn default_sample_interval() -> i64 {
@@ -258,6 +259,6 @@ pub struct ReverseEngineeringCapture {
 
 impl Default for ReverseEngineeringState {
     fn default() -> Self {
-        Self { capture: None, range_mode: false, range_clip: None, start_frame: 0, end_frame: 0, sample_interval: 30, samples: Vec::new() }
+        Self { capture: None, range_mode: true, range_clip: None, start_frame: 0, end_frame: 0, sample_interval: 30, samples: Vec::new(), motion: None }
     }
 }

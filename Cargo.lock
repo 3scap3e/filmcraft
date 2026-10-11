@@ -2295,6 +2295,7 @@ dependencies = [
  "filmcraft-text",
  "filmcraft-time",
  "filmcraft-tts",
+ "filmcraft-vision",
  "image",
  "log",
  "pollster 0.4.0",
@@ -2304,6 +2305,17 @@ dependencies = [
  "serde_json",
  "toml 1.1.6+spec-1.1.0",
  "web-time",
+]
+
+[[package]]
+name = "filmcraft-vision"
+version = "0.6.0"
+dependencies = [
+ "filmcraft-media",
+ "filmcraft-time",
+ "image",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

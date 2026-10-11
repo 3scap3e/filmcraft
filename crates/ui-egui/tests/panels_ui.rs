@@ -518,6 +518,7 @@ fn reverse_engineering_captures_selected_clip_and_keeps_frame_when_scrubbing() {
     d.frames(3);
     assert_eq!(d.label("reverseEngineering.selection"), format!("Video: {}", clip.name));
     let original = serde_json::to_value(&*d.app().session.project).unwrap();
+    d.click("reverseEngineering.mode.frame");
     d.click("reverseEngineering.extractFrame");
     let captured = d.app().ui.panels.reverse_engineering.capture.clone().unwrap();
     assert_eq!(captured.item, clip.item);
@@ -553,21 +554,15 @@ fn reverse_engineering_range_samples_boundaries_previews_and_rejects_invalid_ran
     d.click("reverseEngineering.mode.range");
     d.ok("ui.set", json!({"panels":{"reverseEngineering":{"startFrame":0,"endFrame":5,"sampleInterval":2}}}));
     let original = serde_json::to_value(&*d.app().session.project).unwrap();
-    d.click("reverseEngineering.extractRange");
+    d.ok("ui.menu.invoke", json!({"id":"reverseEngineering.extractRange"}));
     let samples = d.app().ui.panels.reverse_engineering.samples.clone();
     assert_eq!(samples.len(), 4);
     for (sample, frame) in samples.iter().zip([0, 2, 4, 5]) {
         assert_eq!(sample.timeline_time, rate.tick_of(base + frame));
         assert_eq!(sample.media_time, clip.source_time_at(sample.timeline_time));
     }
-    for _ in 0..100 {
-        if d.has("reverseEngineering.sample.0") {
-            break;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(10));
-        d.frames(1);
-    }
-    assert!(d.has("reverseEngineering.sample.0"), "filmstrip must show decoded frames");
+    d.frames(3);
+    assert!(!d.has("reverseEngineering.sample.0"), "range previews must not appear before analysis");
     d.ok("ui.menu.invoke", json!({"id":"reverseEngineering.selectSample","params":{"index":3}}));
     assert_eq!(d.app().ui.panels.reverse_engineering.capture.as_ref(), samples.get(3));
     d.app().session.set_playhead(rate.tick_of(base + 1));
@@ -653,4 +648,75 @@ fn reverse_engineering_range_drag_and_exact_timestamps_stay_in_sync() {
     }
     assert_eq!(d.app().program_picture().map(|picture| picture.frame), Some(expected), "Program monitor must show the selected boundary");
     d.snapshot("panels-reverse-engineering-drag", Some("reverseEngineering."));
+}
+
+#[test]
+#[ignore = "requires the installed external SEA-RAFT runtime; run explicitly"]
+fn reverse_engineering_motion_analyzes_every_frame_exports_and_keeps_project_unchanged() {
+    let mut d = Driver::demo();
+    let clip = d.app().session.active_sequence().unwrap().video_tracks.iter().flat_map(|track| track.items.iter()).next().unwrap().clone();
+    let rate = d.app().session.active_sequence().unwrap().settings.frame_rate;
+    d.app().session.state.selection = vec![clip.id];
+    d.ok("ui.panel.show", json!({"panel":"ReverseEngineering"}));
+    d.click("reverseEngineering.mode.range");
+    d.ok("ui.menu.invoke", json!({"id":"reverseEngineering.setRange","params":{"startFrame":0,"endFrame":5}}));
+    let before = serde_json::to_value(&*d.app().session.project).unwrap();
+    d.click("reverseEngineering.analyzeMotion");
+    for _ in 0..6000 {
+        if d.app().ui.panels.reverse_engineering.motion.is_some() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        d.frames(1);
+    }
+    let report = d.app().ui.panels.reverse_engineering.motion.clone().expect("motion worker must return a report");
+    assert_eq!(report.analyzer, "filmcraft-vision/sea-raft-M");
+    assert_eq!(report.captures.len(), 6);
+    assert_eq!(report.pairs.len(), 5);
+    for (index, pair) in report.pairs.iter().enumerate() {
+        assert_eq!(pair.from_timeline_tick, rate.tick_of(rate.frame_at(clip.start) + index as i64).0);
+        assert_eq!(pair.to_timeline_tick, rate.tick_of(rate.frame_at(clip.start) + index as i64 + 1).0);
+        assert!(pair.analyzed_size.iter().all(|n| *n > 0 && *n <= filmcraft_vision::sea_raft::MAX_SIZE));
+        assert!(pair.vectors.iter().all(|v| v.from.iter().chain(v.to.iter()).all(|n| n.is_finite() && (0.0..=1.0).contains(n))));
+    }
+    d.frames(3); // Worker completion is polled separately from the panel layout pass.
+    assert!(d.has("reverseEngineering.motionNext"));
+    d.click("reverseEngineering.motionNext");
+    assert_eq!(d.app().ui.panels.reverse_engineering.capture.as_ref(), report.captures.get(1));
+    assert_eq!(d.app().session.playhead(), report.captures[1].timeline_time);
+    let bad = d.call("ui.menu.invoke", json!({"id":"reverseEngineering.motionPair","params":{"index":u64::MAX}}));
+    assert_eq!(bad["ok"], false);
+    let display = json!({"enabled":true,"cutoffPixels":0.2,"arrowScale":4.0,"sampleStride":2});
+    d.ok("ui.menu.invoke", json!({"id":"reverseEngineering.setMotionDisplay","params":{"scope":"frame","index":1,"display":display}}));
+    assert_eq!(d.app().ui.panels.reverse_engineering.motion.as_ref().unwrap().display.effective(1).cutoff_pixels, 0.2);
+    assert_eq!(d.app().ui.panels.reverse_engineering.motion.as_ref().unwrap().display.effective(0).cutoff_pixels, 0.0);
+    d.ok("ui.menu.invoke", json!({"id":"reverseEngineering.setMotionDisplay","params":{"scope":"all","index":1,"display":display}}));
+    assert!(d.app().ui.panels.reverse_engineering.motion.as_ref().unwrap().display.frame_overrides.is_empty());
+    assert_eq!(d.app().ui.panels.reverse_engineering.motion.as_ref().unwrap().pairs, report.pairs);
+    let report = d.app().ui.panels.reverse_engineering.motion.clone().unwrap();
+    let path = std::env::temp_dir().join(format!("filmcraft-motion-test-{}.json", std::process::id()));
+    d.ok("ui.menu.invoke", json!({"id":"reverseEngineering.exportMotion","params":{"path":path}}));
+    let exported: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    std::fs::remove_file(&path).unwrap();
+    assert_eq!(exported["pairs"].as_array().unwrap().len(), 5);
+    assert_eq!(exported["settings"]["timelineFrameStep"], 1);
+    assert_eq!(exported["ticksPerSecond"], 254_016_000_000i64);
+    assert_eq!(exported["schemaVersion"], 5);
+    assert_eq!(exported["display"]["allFrames"]["arrowScale"], 4.0);
+    d.ok("ui.menu.invoke", json!({"id":"reverseEngineering.setRange","params":{"startFrame":0,"endFrame":0}}));
+    assert_eq!(d.call("ui.menu.invoke", json!({"id":"reverseEngineering.analyzeMotion"}))["ok"], false);
+    assert_eq!(d.app().ui.panels.reverse_engineering.motion.as_ref(), Some(&report));
+    assert_eq!(serde_json::to_value(&*d.app().session.project).unwrap(), before);
+    d.ok("ui.menu.invoke", json!({"id":"reverseEngineering.cancelMotion"}));
+    d.frames(3);
+    assert!(!d.has("reverseEngineering.frame"), "stale analysis must be hidden after a range edit");
+    d.ok("ui.menu.invoke", json!({"id":"reverseEngineering.setRange","params":{"startFrame":0,"endFrame":5}}));
+    d.ok("ui.menu.invoke", json!({"id":"reverseEngineering.motionFrame","params":{"frameIndex":5}}));
+    assert_eq!(d.app().ui.panels.reverse_engineering.capture.as_ref(), report.captures.get(5));
+    d.wait_for("reverseEngineering.frame");
+    let elements = d.ok("ui.elements", json!({"prefix":"reverseEngineering.selection"}));
+    let rect = &elements[0]["rect"];
+    d.ok("ui.scroll", json!({"x":rect[0].as_f64().unwrap()+80.0,"y":rect[1].as_f64().unwrap()+20.0,"dx":0.0,"dy":-450.0}));
+    d.frames(20);
+    d.snapshot("panels-reverse-engineering-motion", Some("reverseEngineering."));
 }
