@@ -115,3 +115,5 @@ mod replacement_tests {
 pub mod motion_time;
 
 pub mod discontinuities;
+
+pub mod sam2;

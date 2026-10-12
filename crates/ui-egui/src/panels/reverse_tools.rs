@@ -32,6 +32,7 @@ pub enum SavedResult {
     PointTracking(super::reverse_tracking::TrackingReport),
     MotionOverTime(super::reverse_time::TimeReport),
     Discontinuities(super::reverse_discontinuities::Report),
+    ObjectMasks(super::reverse_sam::Report),
 }
 impl SavedResult {
     fn tool(&self) -> &str {
@@ -43,6 +44,7 @@ impl SavedResult {
             Self::PointTracking(_) => "trajectories",
             Self::MotionOverTime(_) => "motionOverTime",
             Self::Discontinuities(_) => "discontinuities",
+            Self::ObjectMasks(_) => "objectMasks",
         }
     }
     fn captures(&self) -> &[ReverseEngineeringCapture] {
@@ -54,6 +56,7 @@ impl SavedResult {
             Self::PointTracking(r) => &r.captures,
             Self::MotionOverTime(r) => &r.captures,
             Self::Discontinuities(r) => &r.captures,
+            Self::ObjectMasks(r) => &r.captures,
         }
     }
 }
@@ -89,6 +92,9 @@ pub(super) fn current_global(app: &FilmcraftApp) -> bool {
     }
 }
 pub(super) fn results_visible(app: &FilmcraftApp, ctx: &egui::Context) -> bool {
+    if app.ui.panels.reverse_engineering.active_tool == "objectMasks" {
+        return app.ui.panels.reverse_engineering.range_mode && !app.ui.panels.reverse_engineering.sam_captures.is_empty();
+    }
     if app.ui.panels.reverse_engineering.active_tool == "trajectories" {
         return app.ui.panels.reverse_engineering.range_mode && !app.ui.panels.reverse_engineering.tracking_captures.is_empty();
     }
@@ -102,6 +108,7 @@ pub(super) fn results_visible(app: &FilmcraftApp, ctx: &egui::Context) -> bool {
         "motionRegions" => super::reverse_regions::current(app),
         "motionOverTime" => super::reverse_time::current(app),
         "discontinuities" => super::reverse_discontinuities::current(app),
+        "objectMasks" => super::reverse_sam::current(app),
         "trajectories" => super::reverse_tracking::current(app),
         _ => false,
     }
@@ -267,7 +274,7 @@ fn restore_saved(app: &mut FilmcraftApp, ctx: &egui::Context) {
             return Err("Unsupported saved-results version".into());
         }
         let results: Vec<SavedResult> = serde_json::from_value(value.get("results").cloned().ok_or("Missing saved results")?).map_err(|e| e.to_string())?;
-        if results.len() > 16 || results.iter().any(|r| r.tool() != "trajectories" && r.captures().len() > 300) {
+        if results.len() > 16 || results.iter().any(|r| !matches!(r.tool(), "trajectories" | "objectMasks") && r.captures().len() > 300) {
             return Err("Saved-result limits exceeded".into());
         }
         Ok(results)
@@ -286,7 +293,7 @@ pub fn command(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, params: &V
         }
         return Ok(json!({"cancelled":true}));
     }
-    if is_running(ctx) || super::reverse_motion::is_running(ctx) || super::reverse_tracking::is_running(ctx) {
+    if is_running(ctx) || super::reverse_motion::is_running(ctx) || (super::reverse_tracking::is_running(ctx) || super::reverse_sam::is_running(ctx)) {
         return Err("Cancel the running analysis before changing tools or results".into());
     }
     if id == "reverseEngineering.setExecutionDevice" {
@@ -303,7 +310,10 @@ pub fn command(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, params: &V
 
     if id == "reverseEngineering.chooseTool" {
         let tool = params.get("tool").and_then(Value::as_str).ok_or("Supply a tool id")?;
-        if !matches!(tool, "menu" | "opticalFlow" | "globalMotion" | "localMotion" | "motionRegions" | "motionOverTime" | "discontinuities" | "trajectories") {
+        if !matches!(
+            tool,
+            "menu" | "opticalFlow" | "globalMotion" | "localMotion" | "motionRegions" | "motionOverTime" | "discontinuities" | "objectMasks" | "trajectories"
+        ) {
             return Err("This analytical layer is not implemented yet".into());
         }
         if tool != "menu" && super::reverse_engineering::selected_source(app).is_none() {
@@ -311,6 +321,37 @@ pub fn command(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, params: &V
         }
         if tool != "menu" && !app.ui.panels.reverse_engineering.range_mode {
             return Err("Motion analysis needs a range with at least two frames".into());
+        }
+        if tool == "objectMasks" {
+            app.ui.panels.reverse_engineering.active_tool = tool.into();
+            super::reverse_sam::prepare(app)?;
+            if !super::reverse_sam::current(app) {
+                let saved = app.ui.panels.reverse_engineering.saved_results.iter().find_map(|r| match r {
+                    SavedResult::ObjectMasks(report)
+                        if super::reverse_engineering::captures_are_current(app, &report.captures)
+                            && report.project_revision == app.session.revision
+                            && report
+                                .inference
+                                .validate(
+                                    &report.inference.tracks.iter().map(|t| t.object.clone()).collect::<Vec<_>>(),
+                                    report.captures.len(),
+                                    report.inference.mask_size,
+                                )
+                                .is_ok() =>
+                    {
+                        Some(report.clone())
+                    }
+                    _ => None,
+                });
+                if let Some(report) = saved {
+                    let state = &mut app.ui.panels.reverse_engineering;
+                    state.sam_objects = report.inference.tracks.iter().map(|t| t.object.clone()).collect();
+                    state.sam_frame = state.sam_objects.first().map(|o| o.frame_index).unwrap_or(0);
+                    state.sam_report = Some(report);
+                }
+            }
+            ctx.request_repaint();
+            return Ok(json!({"tool":tool}));
         }
         if tool == "trajectories" {
             app.ui.panels.reverse_engineering.active_tool = tool.into();
@@ -516,7 +557,10 @@ pub fn command(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, params: &V
         return export(app, params, &json!({"schemaVersion":1,"scope":"selectedVideoRange","results":results}));
     }
     let tool = app.ui.panels.reverse_engineering.active_tool.clone();
-    if !matches!(tool.as_str(), "opticalFlow" | "globalMotion" | "localMotion" | "motionRegions" | "motionOverTime" | "discontinuities" | "trajectories") {
+    if !matches!(
+        tool.as_str(),
+        "opticalFlow" | "globalMotion" | "localMotion" | "motionRegions" | "motionOverTime" | "discontinuities" | "objectMasks" | "trajectories"
+    ) {
         return Err("Choose an implemented tool first".into());
     }
     if id == "reverseEngineering.deleteToolResult" {
@@ -544,6 +588,9 @@ pub fn command(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, params: &V
             }
             "motionRegions" => app.ui.panels.reverse_engineering.motion_regions = None,
             "trajectories" => app.ui.panels.reverse_engineering.tracking_report = None,
+            "objectMasks" => {
+                app.ui.panels.reverse_engineering.sam_report = None;
+            }
             "discontinuities" => {
                 app.ui.panels.reverse_engineering.discontinuities = None;
                 app.ui.panels.reverse_engineering.active_tool = "menu".into();
@@ -561,6 +608,9 @@ pub fn command(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, params: &V
         super::reverse_time::build(app)?;
     }
     let result = match tool.as_str() {
+        "objectMasks" if super::reverse_sam::current(app) => {
+            SavedResult::ObjectMasks(app.ui.panels.reverse_engineering.sam_report.clone().ok_or("Analyze masks first")?)
+        }
         "opticalFlow" if super::reverse_engineering::motion_is_current(app) => {
             SavedResult::OpticalFlow(app.ui.panels.reverse_engineering.motion.clone().ok_or("Analyze first")?)
         }
@@ -638,6 +688,7 @@ fn status(app: &FilmcraftApp, tool: &str) -> String {
         "motionRegions" => super::reverse_regions::current(app),
         "motionOverTime" => super::reverse_time::current(app),
         "discontinuities" => super::reverse_discontinuities::current(app),
+        "objectMasks" => super::reverse_sam::current(app),
         "trajectories" => super::reverse_tracking::current(app),
         _ => false,
     };
@@ -648,6 +699,7 @@ fn status(app: &FilmcraftApp, tool: &str) -> String {
         (Some(SavedResult::GlobalMotion(saved)), "globalMotion") => state.global_motion.as_ref() == Some(saved),
         (Some(SavedResult::LocalMotion(saved)), "localMotion") => state.local_motion.as_ref() == Some(saved),
         (Some(SavedResult::MotionRegions(saved)), "motionRegions") => state.motion_regions.as_ref() == Some(saved),
+        (Some(SavedResult::ObjectMasks(saved)), "objectMasks") => state.sam_report.as_ref() == Some(saved),
         (Some(SavedResult::Discontinuities(saved)), "discontinuities") => state.discontinuities.as_ref() == Some(saved),
         (Some(SavedResult::MotionOverTime(saved)), "motionOverTime") => state.motion_time.as_ref() == Some(saved),
         (Some(SavedResult::PointTracking(saved)), "trajectories") => state.tracking_report.as_ref() == Some(saved),
@@ -685,6 +737,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui) {
             ("motionOverTime", "Motion over time", true),
             ("trajectories", "Point tracking", true),
             ("discontinuities", "Motion discontinuities", true),
+            ("objectMasks", "Object masks · SAM 2.1", true),
         ];
         let has_video = super::reverse_engineering::selected_source(app).is_some();
         let label_width = (ui.available_width() - 24.0).max(1.0);
@@ -701,6 +754,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui) {
                     "motionRegions" => super::reverse_regions::current(app),
                     "motionOverTime" => super::reverse_time::current(app),
                     "discontinuities" => super::reverse_discontinuities::current(app),
+                    "objectMasks" => super::reverse_sam::current(app),
                     "trajectories" => super::reverse_tracking::current(app),
                     _ => false,
                 };
@@ -737,7 +791,9 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui) {
         }
         return;
     }
-    let busy = is_running(ui.ctx()) || super::reverse_motion::is_running(ui.ctx()) || super::reverse_tracking::is_running(ui.ctx());
+    let busy = is_running(ui.ctx())
+        || super::reverse_motion::is_running(ui.ctx())
+        || (super::reverse_tracking::is_running(ui.ctx()) || super::reverse_sam::is_running(ui.ctx()));
     let response = ui.add_enabled(!busy, egui::Button::new("← Tool menu"));
     app.auto.add("reverseEngineering.tool.back", response.rect, "Back to tool menu");
     if response.clicked() {
@@ -856,10 +912,17 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui) {
     if tool == "motionRegions" {
         super::reverse_regions::show(app, ui);
     }
+    if tool == "objectMasks" {
+        super::reverse_sam::show(app, ui);
+    }
     if tool == "trajectories" {
         super::reverse_tracking::show(app, ui);
     }
-    if !busy && results_visible(app, ui.ctx()) && (tool != "trajectories" || super::reverse_tracking::current(app)) {
+    if !busy
+        && results_visible(app, ui.ctx())
+        && (tool != "trajectories" || super::reverse_tracking::current(app))
+        && (tool != "objectMasks" || super::reverse_sam::current(app))
+    {
         ui.horizontal_wrapped(|ui| {
             for (id, label) in [("saveToolResult", "Save result"), ("deleteToolResult", "Delete result"), ("exportTool", "Export this tool")] {
                 let response = ui.button(label);
@@ -942,6 +1005,11 @@ pub(super) fn clear_range_results(app: &mut FilmcraftApp) -> Result<(), String> 
     s.global_motion = None;
     s.local_motion = None;
     s.motion_regions = None;
+    s.sam_report = None;
+    s.sam_captures.clear();
+    s.sam_objects.clear();
+    s.sam_colors.clear();
+    s.sam_frame = 0;
     s.discontinuities = None;
     s.motion_time = None;
     s.tracking_report = None;

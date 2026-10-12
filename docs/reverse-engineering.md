@@ -118,16 +118,20 @@ SEA-RAFT and BootsTAPIR have separate **Auto / CPU / GPU** choices. The selected
 to the next model run, not existing results. It is sent through that subprocess’s environment;
 the actual device and requested preference are recorded in runtime metadata. Forced GPU reports
 an error when its backend is unavailable rather than silently using CPU. Auto uses an available
-supported GPU or CPU. SEA-RAFT supports MPS on this Mac. BootsTAPIR’s Apple GPU choice is disabled
-because its predictions failed validation; Auto uses CPU here. Its GPU option requires CUDA,
-which remains unbenchmarked on another machine. Rust-only global fitting and grouping do not
+supported GPU or CPU. SEA-RAFT supports MPS on this Mac. BootsTAPIR Auto uses CPU on Apple devices because earlier MPS predictions failed validation.
+Explicit GPU selection allows users to try CUDA or Apple MPS and inspect runtime failures. Rust-only global fitting and grouping do not
 need model execution controls.
 
 ## Two-column inspection layout
 
-All tools share a full-height left column for controls, navigation, timestamps and measurements,
-and a right column for the selected frame with its horizontal thumbnail strip underneath. Text
+All tools share a full-height left column for analysis controls and save/delete/export actions.
+Navigation, timestamps, measurements, the selected frame and its horizontal thumbnail strip
+are in the right column. Text
 and control groups wrap within their columns; the selected frame scales to leave room for the
 strip. The left column scrolls independently only when the panel is too short to contain its
 controls. The image is not placed below that scroll area. Thumbnails are virtualized, including
 for full-range point tracking, so offscreen frames do not create decoding requests or widgets.
+
+## Object masks
+
+SAM 2.1 is an independent optional model tool. See [setup, usage and mask export](reverse-engineering-sam2.md).

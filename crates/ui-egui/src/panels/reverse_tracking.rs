@@ -95,7 +95,7 @@ pub(super) fn command(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, par
         }
         return Ok(json!({"cancelled":true}));
     }
-    if is_running(ctx) || super::reverse_motion::is_running(ctx) || super::reverse_tools::is_running(ctx) {
+    if is_running(ctx) || super::reverse_motion::is_running(ctx) || super::reverse_tools::is_running(ctx) || super::reverse_sam::is_running(ctx) {
         return Err("Cancel the current analysis before changing point tracking".into());
     }
     prepare(app)?;
@@ -436,7 +436,7 @@ pub(super) fn overlay(app: &mut FilmcraftApp, ui: &egui::Ui, rect: egui::Rect) {
     }
 }
 
-fn group_color(label: &str) -> egui::Color32 {
+pub(super) fn group_color(label: &str) -> egui::Color32 {
     let hash = label.bytes().fold(2166136261u32, |h, b| (h ^ u32::from(b)).wrapping_mul(16777619));
     let palette = [
         egui::Color32::from_rgb(100, 220, 235),

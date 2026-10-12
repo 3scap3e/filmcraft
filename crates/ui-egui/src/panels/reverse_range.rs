@@ -33,7 +33,10 @@ pub(super) fn confirm(app: &mut FilmcraftApp, ctx: &egui::Context, params: &Valu
         ctx.request_repaint();
         return Ok(json!({"cancelled":true}));
     }
-    if super::reverse_motion::is_running(ctx) || super::reverse_tools::is_running(ctx) || super::reverse_tracking::is_running(ctx) {
+    if super::reverse_motion::is_running(ctx)
+        || super::reverse_tools::is_running(ctx)
+        || (super::reverse_tracking::is_running(ctx) || super::reverse_sam::is_running(ctx))
+    {
         return Err("Cancel analysis before accepting a new range".into());
     }
     let s = &app.ui.panels.reverse_engineering;

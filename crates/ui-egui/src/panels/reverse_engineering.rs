@@ -116,6 +116,18 @@ pub fn command(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, params: &V
     }
     if matches!(
         id,
+        "reverseEngineering.setSamDisplay"
+            | "reverseEngineering.samFrame"
+            | "reverseEngineering.setSamOptions"
+            | "reverseEngineering.addSamPoint"
+            | "reverseEngineering.clearSamObject"
+            | "reverseEngineering.runSam"
+            | "reverseEngineering.cancelSam"
+    ) {
+        return super::reverse_sam::command(app, ctx, id, params);
+    }
+    if matches!(
+        id,
         "reverseEngineering.labelUngroupedPoints"
             | "reverseEngineering.setTrackingGroup"
             | "reverseEngineering.runTracking"
@@ -127,8 +139,8 @@ pub fn command(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, params: &V
     ) {
         return super::reverse_tracking::command(app, ctx, id, params);
     }
-    if super::reverse_tracking::is_running(ctx) {
-        return Err("Cancel point tracking before changing the range or tools".into());
+    if super::reverse_tracking::is_running(ctx) || super::reverse_sam::is_running(ctx) {
+        return Err("Cancel the running analysis before changing the range or tools".into());
     }
     if matches!(
         id,
@@ -339,10 +351,17 @@ pub(super) fn picture(app: &mut FilmcraftApp, ui: &mut egui::Ui, capture: &Rever
         let response = ui.add(image);
         app.auto.add(id, response.rect, &capture.name);
         if id == "reverseEngineering.frame" {
-            if app.ui.panels.reverse_engineering.active_tool == "trajectories" {
+            if app.ui.panels.reverse_engineering.active_tool == "objectMasks" {
+                super::reverse_sam::overlay(app, ui, response.rect);
+            } else if app.ui.panels.reverse_engineering.active_tool == "trajectories" {
                 super::reverse_tracking::overlay(app, ui, response.rect);
             } else {
                 super::reverse_motion::overlay(app, ui, capture, response.rect);
+            }
+        }
+        if app.ui.panels.reverse_engineering.active_tool == "objectMasks" && id.starts_with("reverseEngineering.sam.resultThumbnail.") {
+            if let Some(frame) = app.ui.panels.reverse_engineering.sam_captures.iter().position(|c| c == capture) {
+                super::reverse_sam::draw_masks(app, ui, response.rect, frame);
             }
         }
         response.clicked()
@@ -377,9 +396,16 @@ pub(super) fn selected_picture(app: &mut FilmcraftApp, ui: &mut egui::Ui, captur
 
 /// A horizontal, virtualized strip shared by all tools.
 pub(super) fn frame_strip(app: &mut FilmcraftApp, ui: &mut egui::Ui, captures: &[ReverseEngineeringCapture], selected: usize, tracking: bool) {
-    let busy = super::reverse_tracking::is_running(ui.ctx());
+    let busy = super::reverse_tracking::is_running(ui.ctx()) || super::reverse_sam::is_running(ui.ctx());
     let cell_width = 84.0;
-    let prefix = if tracking { "reverseEngineering.tracking" } else { "reverseEngineering" };
+    let sam = app.ui.panels.reverse_engineering.active_tool == "objectMasks";
+    let prefix = if sam {
+        "reverseEngineering.sam"
+    } else if tracking {
+        "reverseEngineering.tracking"
+    } else {
+        "reverseEngineering"
+    };
     egui::ScrollArea::horizontal().auto_shrink([false, true]).id_salt(("reverse-results-filmstrip", tracking)).max_height(92.0).show_viewport(
         ui,
         |ui, viewport| {
@@ -402,7 +428,13 @@ pub(super) fn frame_strip(app: &mut FilmcraftApp, ui: &mut egui::Ui, captures: &
                         let thumbnail_clicked = picture(app, ui, capture, 96, &format!("{prefix}.resultThumbnail.{index}"), !busy);
                         let clicked = response.clicked() || thumbnail_clicked;
                         if clicked && !busy {
-                            let command = if tracking { "reverseEngineering.trackingFrame" } else { "reverseEngineering.motionFrame" };
+                            let command = if sam {
+                                "reverseEngineering.samFrame"
+                            } else if tracking {
+                                "reverseEngineering.trackingFrame"
+                            } else {
+                                "reverseEngineering.motionFrame"
+                            };
                             invoke(app, ui.ctx(), command, json!({"frameIndex":index}));
                         }
                     });
@@ -427,6 +459,7 @@ pub fn timeline_range(
     let busy = super::reverse_motion::is_running(ui.ctx())
         || super::reverse_tools::is_running(ui.ctx())
         || super::reverse_tracking::is_running(ui.ctx())
+        || super::reverse_sam::is_running(ui.ctx())
         || super::reverse_range::pending(ui.ctx());
     let Ok(clip) = selected_clip(app) else { return false };
     let rect = Rect::from_min_max(egui::pos2(layout.x_of(Tick::ZERO), video_area.top()), egui::pos2(layout.x_of(clip.end()), video_area.bottom()))
@@ -588,7 +621,8 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                     ui.add_enabled_ui(
                         !(super::reverse_motion::is_running(ui.ctx())
                             || super::reverse_tools::is_running(ui.ctx())
-                            || super::reverse_tracking::is_running(ui.ctx())),
+                            || super::reverse_tracking::is_running(ui.ctx())
+                            || super::reverse_sam::is_running(ui.ctx())),
                         |ui| {
                             ui.vertical(|ui| {
                                 for (start, label, id, mark) in [
@@ -677,13 +711,17 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         if app.ui.panels.reverse_engineering.active_tool == "motionOverTime" {
             super::reverse_time::graph(app, &mut result_ui);
         }
-        if app.ui.panels.reverse_engineering.active_tool == "trajectories" {
+        if app.ui.panels.reverse_engineering.active_tool == "objectMasks" {
+            super::reverse_sam::controls(app, &mut result_ui);
+        } else if app.ui.panels.reverse_engineering.active_tool == "trajectories" {
             super::reverse_tracking::show_result_controls(app, &mut result_ui);
         } else {
             super::reverse_motion::show_result_controls(app, &mut result_ui);
         }
         result_ui.separator();
-        if app.ui.panels.reverse_engineering.active_tool == "trajectories" {
+        if app.ui.panels.reverse_engineering.active_tool == "objectMasks" {
+            super::reverse_sam::result(app, &mut result_ui);
+        } else if app.ui.panels.reverse_engineering.active_tool == "trajectories" {
             super::reverse_tracking::show_result(app, &mut result_ui);
         } else {
             super::reverse_motion::show_result(app, &mut result_ui);
