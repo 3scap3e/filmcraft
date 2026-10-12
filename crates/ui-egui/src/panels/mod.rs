@@ -330,3 +330,5 @@ pub fn panel_menu_popup(app: &mut FilmcraftApp, ui: &mut egui::Ui) {
 }
 
 mod reverse_time;
+
+mod reverse_discontinuities;

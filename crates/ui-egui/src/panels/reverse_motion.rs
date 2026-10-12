@@ -456,11 +456,6 @@ pub fn show_result_controls(app: &mut FilmcraftApp, ui: &mut egui::Ui) {
                 invoke(app, ui.ctx(), "reverseEngineering.motionFrame", json!({"frameIndex":target}));
             }
         }
-        let response = ui.button("Export this tool");
-        app.auto.add("reverseEngineering.exportMotion", response.rect, "Export model results and separate display settings");
-        if response.clicked() {
-            invoke(app, ui.ctx(), "reverseEngineering.exportTool", json!({}));
-        }
     });
     ui.horizontal_wrapped(|ui| {
         ui.label("Jump to frame in range:");
@@ -528,7 +523,7 @@ pub fn show_result(app: &mut FilmcraftApp, ui: &mut egui::Ui) {
 
 pub fn overlay(app: &mut FilmcraftApp, ui: &egui::Ui, capture: &ReverseEngineeringCapture, rect: egui::Rect) {
     let tool = app.ui.panels.reverse_engineering.active_tool.as_str();
-    if tool == "motionOverTime" {
+    if matches!(tool, "motionOverTime" | "discontinuities") {
         return;
     }
     if tool == "globalMotion" {

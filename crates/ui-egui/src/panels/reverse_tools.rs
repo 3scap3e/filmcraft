@@ -31,6 +31,7 @@ pub enum SavedResult {
     MotionRegions(super::reverse_regions::RegionReport),
     PointTracking(super::reverse_tracking::TrackingReport),
     MotionOverTime(super::reverse_time::TimeReport),
+    Discontinuities(super::reverse_discontinuities::Report),
 }
 impl SavedResult {
     fn tool(&self) -> &str {
@@ -41,6 +42,7 @@ impl SavedResult {
             Self::MotionRegions(_) => "motionRegions",
             Self::PointTracking(_) => "trajectories",
             Self::MotionOverTime(_) => "motionOverTime",
+            Self::Discontinuities(_) => "discontinuities",
         }
     }
     fn captures(&self) -> &[ReverseEngineeringCapture] {
@@ -51,6 +53,7 @@ impl SavedResult {
             Self::MotionRegions(r) => &r.captures,
             Self::PointTracking(r) => &r.captures,
             Self::MotionOverTime(r) => &r.captures,
+            Self::Discontinuities(r) => &r.captures,
         }
     }
 }
@@ -98,6 +101,7 @@ pub(super) fn results_visible(app: &FilmcraftApp, ctx: &egui::Context) -> bool {
         "localMotion" => super::reverse_local::current(app),
         "motionRegions" => super::reverse_regions::current(app),
         "motionOverTime" => super::reverse_time::current(app),
+        "discontinuities" => super::reverse_discontinuities::current(app),
         "trajectories" => super::reverse_tracking::current(app),
         _ => false,
     }
@@ -299,7 +303,7 @@ pub fn command(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, params: &V
 
     if id == "reverseEngineering.chooseTool" {
         let tool = params.get("tool").and_then(Value::as_str).ok_or("Supply a tool id")?;
-        if !matches!(tool, "menu" | "opticalFlow" | "globalMotion" | "localMotion" | "motionRegions" | "motionOverTime" | "trajectories") {
+        if !matches!(tool, "menu" | "opticalFlow" | "globalMotion" | "localMotion" | "motionRegions" | "motionOverTime" | "discontinuities" | "trajectories") {
             return Err("This analytical layer is not implemented yet".into());
         }
         if tool != "menu" && super::reverse_engineering::selected_source(app).is_none() {
@@ -368,10 +372,26 @@ pub fn command(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, params: &V
                 app.ui.panels.reverse_engineering.motion_regions = Some(regions);
             }
         }
+        if tool == "discontinuities" && !super::reverse_discontinuities::current(app) {
+            let saved = app.ui.panels.reverse_engineering.saved_results.iter().find_map(|r| match r {
+                SavedResult::Discontinuities(report)
+                    if super::reverse_engineering::captures_are_current(app, &report.captures)
+                        && report.threshold_pixels.is_finite()
+                        && (0.001..=100.0).contains(&report.threshold_pixels) =>
+                {
+                    Some(report.clone())
+                }
+                _ => None,
+            });
+            if let Some(report) = saved {
+                app.ui.panels.reverse_engineering.discontinuities = Some(report);
+            }
+        }
         app.ui.panels.reverse_engineering.active_tool = tool.into();
         ctx.request_repaint();
         if tool == "opticalFlow"
-            || (matches!(tool, "globalMotion" | "localMotion" | "motionRegions" | "motionOverTime") && !super::reverse_engineering::motion_is_current(app))
+            || (matches!(tool, "globalMotion" | "localMotion" | "motionRegions" | "motionOverTime" | "discontinuities")
+                && !super::reverse_engineering::motion_is_current(app))
         {
             super::reverse_engineering::command(app, ctx, "reverseEngineering.analyzeMotion", &json!({}))?;
         }
@@ -385,6 +405,9 @@ pub fn command(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, params: &V
             super::reverse_regions::build(app)?;
         }
         return Ok(json!({"tool":tool}));
+    }
+    if id == "reverseEngineering.setDiscontinuityOptions" {
+        return super::reverse_discontinuities::options(app, params);
     }
     if id == "reverseEngineering.setLocalView" {
         let mode = params.get("mode").and_then(Value::as_str).ok_or("Supply comparison mode: raw or residual")?;
@@ -440,6 +463,12 @@ pub fn command(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, params: &V
             .iter()
             .filter(|r| super::reverse_engineering::captures_are_current(app, r.captures()))
             .filter(|r| match r {
+                SavedResult::Discontinuities(report) => !saved.iter().any(|s| match s {
+                    SavedResult::OpticalFlow(flow) if flow.captures == report.captures => {
+                        flow.audit.revision != report.source_motion_revision || source_time(flow) != report.source_completed_at_unix_ms
+                    }
+                    _ => false,
+                }),
                 SavedResult::MotionOverTime(report) => !saved.iter().any(|s| match s {
                     SavedResult::OpticalFlow(flow) if flow.captures == report.captures => {
                         flow.audit.revision != report.source_motion_revision || source_time(flow) != report.source_completed_at_unix_ms
@@ -487,7 +516,7 @@ pub fn command(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, params: &V
         return export(app, params, &json!({"schemaVersion":1,"scope":"selectedVideoRange","results":results}));
     }
     let tool = app.ui.panels.reverse_engineering.active_tool.clone();
-    if !matches!(tool.as_str(), "opticalFlow" | "globalMotion" | "localMotion" | "motionRegions" | "motionOverTime" | "trajectories") {
+    if !matches!(tool.as_str(), "opticalFlow" | "globalMotion" | "localMotion" | "motionRegions" | "motionOverTime" | "discontinuities" | "trajectories") {
         return Err("Choose an implemented tool first".into());
     }
     if id == "reverseEngineering.deleteToolResult" {
@@ -515,6 +544,10 @@ pub fn command(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, params: &V
             }
             "motionRegions" => app.ui.panels.reverse_engineering.motion_regions = None,
             "trajectories" => app.ui.panels.reverse_engineering.tracking_report = None,
+            "discontinuities" => {
+                app.ui.panels.reverse_engineering.discontinuities = None;
+                app.ui.panels.reverse_engineering.active_tool = "menu".into();
+            }
             "motionOverTime" => {
                 app.ui.panels.reverse_engineering.motion_time = None;
                 app.ui.panels.reverse_engineering.active_tool = "menu".into();
@@ -537,6 +570,9 @@ pub fn command(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, params: &V
         }
         "motionRegions" if super::reverse_regions::current(app) => {
             SavedResult::MotionRegions(app.ui.panels.reverse_engineering.motion_regions.clone().ok_or("Analyze first")?)
+        }
+        "discontinuities" if super::reverse_discontinuities::current(app) => {
+            SavedResult::Discontinuities(app.ui.panels.reverse_engineering.discontinuities.clone().ok_or("Analyze motion changes first")?)
         }
         "motionOverTime" if super::reverse_time::current(app) => {
             SavedResult::MotionOverTime(app.ui.panels.reverse_engineering.motion_time.clone().ok_or("Summarize motion first")?)
@@ -601,6 +637,7 @@ fn status(app: &FilmcraftApp, tool: &str) -> String {
         "localMotion" => super::reverse_local::current(app),
         "motionRegions" => super::reverse_regions::current(app),
         "motionOverTime" => super::reverse_time::current(app),
+        "discontinuities" => super::reverse_discontinuities::current(app),
         "trajectories" => super::reverse_tracking::current(app),
         _ => false,
     };
@@ -611,6 +648,7 @@ fn status(app: &FilmcraftApp, tool: &str) -> String {
         (Some(SavedResult::GlobalMotion(saved)), "globalMotion") => state.global_motion.as_ref() == Some(saved),
         (Some(SavedResult::LocalMotion(saved)), "localMotion") => state.local_motion.as_ref() == Some(saved),
         (Some(SavedResult::MotionRegions(saved)), "motionRegions") => state.motion_regions.as_ref() == Some(saved),
+        (Some(SavedResult::Discontinuities(saved)), "discontinuities") => state.discontinuities.as_ref() == Some(saved),
         (Some(SavedResult::MotionOverTime(saved)), "motionOverTime") => state.motion_time.as_ref() == Some(saved),
         (Some(SavedResult::PointTracking(saved)), "trajectories") => state.tracking_report.as_ref() == Some(saved),
         _ => false,
@@ -646,7 +684,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui) {
             ("motionRegions", "Motion regions", true),
             ("motionOverTime", "Motion over time", true),
             ("trajectories", "Point tracking", true),
-            ("discontinuities", "Motion discontinuities", false),
+            ("discontinuities", "Motion discontinuities", true),
         ];
         let has_video = super::reverse_engineering::selected_source(app).is_some();
         let label_width = (ui.available_width() - 24.0).max(1.0);
@@ -662,6 +700,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui) {
                     "localMotion" => super::reverse_local::current(app),
                     "motionRegions" => super::reverse_regions::current(app),
                     "motionOverTime" => super::reverse_time::current(app),
+                    "discontinuities" => super::reverse_discontinuities::current(app),
                     "trajectories" => super::reverse_tracking::current(app),
                     _ => false,
                 };
@@ -808,6 +847,9 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui) {
             }
         }
     }
+    if tool == "discontinuities" {
+        super::reverse_discontinuities::show(app, ui);
+    }
     if tool == "motionOverTime" {
         super::reverse_time::show(app, ui);
     }
@@ -900,6 +942,7 @@ pub(super) fn clear_range_results(app: &mut FilmcraftApp) -> Result<(), String> 
     s.global_motion = None;
     s.local_motion = None;
     s.motion_regions = None;
+    s.discontinuities = None;
     s.motion_time = None;
     s.tracking_report = None;
     s.tracking_queries.clear();

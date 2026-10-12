@@ -39,6 +39,7 @@ pub const UI_COMMANDS: &[UiCommand] = &[
     uic!("reverseEngineering.clearTrackingPoints", "Clear Tracking Points", [], None),
     uic!("reverseEngineering.trackingFrame", "Inspect Tracking Frame", [], None),
     uic!("reverseEngineering.runRegions", "Analyze Motion Regions", [], None),
+    uic!("reverseEngineering.setDiscontinuityOptions", "Set Motion Discontinuity Threshold", [], None),
     uic!("reverseEngineering.setRegionOptions", "Set Motion Region Options", [], None),
     uic!("reverseEngineering.runLocal", "Analyze Local Motion", [], None),
     uic!("reverseEngineering.runGlobal", "Fit Global Image Motion", [], None),

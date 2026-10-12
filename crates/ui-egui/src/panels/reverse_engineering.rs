@@ -136,6 +136,7 @@ pub fn command(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, params: &V
             | "reverseEngineering.runGlobal"
             | "reverseEngineering.runLocal"
             | "reverseEngineering.runRegions"
+            | "reverseEngineering.setDiscontinuityOptions"
             | "reverseEngineering.setRegionOptions"
             | "reverseEngineering.setLocalView"
             | "reverseEngineering.cancelGlobal"
@@ -670,6 +671,9 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     result_ui.set_clip_rect(results.intersect(ui.clip_rect()));
     result_ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Wrap);
     if inspect_motion {
+        if app.ui.panels.reverse_engineering.active_tool == "discontinuities" {
+            super::reverse_discontinuities::graph(app, &mut result_ui);
+        }
         if app.ui.panels.reverse_engineering.active_tool == "motionOverTime" {
             super::reverse_time::graph(app, &mut result_ui);
         }
