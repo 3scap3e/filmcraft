@@ -90,3 +90,7 @@ New automation commands: `reverseEngineering.motionFrame {"frameIndex":0}` (zero
 Preview loading uses a separate timeout for each exact source timestamp and size. Newly visible result thumbnails therefore load even after a long analysis or delayed scroll. Missing previews offer a local Retry action that requests the image again without rerunning SEA-RAFT. Compact loading/retry placeholders keep the filmstrip readable.
 
 Schema version 5 adds an `audit` object. Successful completion increments the report revision and relevant 1-based destination frame revisions. `completedRuns` records scope (`all` or `frame`), frame number, and UTC Unix completion milliseconds; the latest 64 records are retained. Reanalyzing UI frame 116 records `frameNumber: 116` even if its predictions are identical. Cancelled, failed, or timestamp-mismatched reruns never update the audit. Older reports load with an empty audit; their previous execution history is not inferred.
+
+## R5 tool workflow
+
+The range selector now leads to a tool menu instead of opening optical-flow controls directly. See [R5 tool menu, saving, exports, and global image motion](reverse-engineering-r5.md). SEA-RAFT and global motion are available; the five later layers are disabled.

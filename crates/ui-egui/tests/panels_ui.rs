@@ -509,20 +509,22 @@ fn reverse_engineering_migrates_old_layout_once_and_keeps_close_choice() {
 }
 
 #[test]
-fn reverse_engineering_captures_selected_clip_and_keeps_frame_when_scrubbing() {
+fn reverse_engineering_captures_timeline_and_keeps_frame_when_scrubbing() {
     let mut d = Driver::demo();
     let clip = d.app().session.active_sequence().unwrap().video_tracks.iter().flat_map(|track| track.items.iter()).next().unwrap().clone();
     d.app().session.state.selection = vec![clip.id];
     d.app().session.set_playhead(clip.start);
     d.ok("ui.panel.show", json!({"panel": "ReverseEngineering"}));
     d.frames(3);
-    assert_eq!(d.label("reverseEngineering.selection"), format!("Video: {}", clip.name));
+    let sequence_id = d.app().session.state.active_sequence.unwrap();
+    let sequence_name = d.app().session.project.item(sequence_id).unwrap().name.clone();
+    assert_eq!(d.label("reverseEngineering.selection"), format!("Timeline: {sequence_name}"));
     let original = serde_json::to_value(&*d.app().session.project).unwrap();
     d.click("reverseEngineering.mode.frame");
     d.click("reverseEngineering.extractFrame");
     let captured = d.app().ui.panels.reverse_engineering.capture.clone().unwrap();
-    assert_eq!(captured.item, clip.item);
-    assert_eq!(captured.media_time, clip.source_time_at(clip.start));
+    assert_eq!(captured.item, sequence_id);
+    assert_eq!(captured.media_time, clip.start);
     assert!(d.has("reverseEngineering.timecode"));
     for _ in 0..100 {
         if d.has("reverseEngineering.frame") {
@@ -532,7 +534,8 @@ fn reverse_engineering_captures_selected_clip_and_keeps_frame_when_scrubbing() {
         d.frames(1);
     }
     assert!(d.has("reverseEngineering.frame"), "the captured frame must actually decode");
-    d.app().session.set_playhead(clip.end());
+    let timeline_end = d.app().session.active_sequence().unwrap().duration();
+    d.app().session.set_playhead(timeline_end);
     d.frames(3);
     assert_eq!(d.app().ui.panels.reverse_engineering.capture.as_ref(), Some(&captured));
     let reply = d.call("ui.menu.invoke", json!({"id":"reverseEngineering.extractFrame"}));
@@ -559,7 +562,7 @@ fn reverse_engineering_range_samples_boundaries_previews_and_rejects_invalid_ran
     assert_eq!(samples.len(), 4);
     for (sample, frame) in samples.iter().zip([0, 2, 4, 5]) {
         assert_eq!(sample.timeline_time, rate.tick_of(base + frame));
-        assert_eq!(sample.media_time, clip.source_time_at(sample.timeline_time));
+        assert_eq!(sample.media_time, sample.timeline_time);
     }
     d.frames(3);
     assert!(!d.has("reverseEngineering.sample.0"), "range previews must not appear before analysis");
@@ -618,7 +621,7 @@ fn reverse_engineering_range_drag_and_exact_timestamps_stay_in_sync() {
     assert_eq!(d.app().session.playhead(), rate.tick_of(base + 2));
     assert_eq!(d.app().playback.stop_at, Some(rate.tick_of(base + 13)));
     assert!(!d.app().playback.looping);
-    d.click("reverseEngineering.stop");
+    d.app().stop();
     assert!(!d.app().playback.playing);
     d.frames(2);
     assert_eq!(d.label("reverseEngineering.range.start"), timecode(2));
@@ -661,7 +664,7 @@ fn reverse_engineering_motion_analyzes_every_frame_exports_and_keeps_project_unc
     d.click("reverseEngineering.mode.range");
     d.ok("ui.menu.invoke", json!({"id":"reverseEngineering.setRange","params":{"startFrame":0,"endFrame":5}}));
     let before = serde_json::to_value(&*d.app().session.project).unwrap();
-    d.click("reverseEngineering.analyzeMotion");
+    d.ok("ui.menu.invoke", json!({"id":"reverseEngineering.chooseTool","params":{"tool":"opticalFlow"}}));
     for _ in 0..6000 {
         if d.app().ui.panels.reverse_engineering.motion.is_some() {
             break;
@@ -714,9 +717,39 @@ fn reverse_engineering_motion_analyzes_every_frame_exports_and_keeps_project_unc
     d.ok("ui.menu.invoke", json!({"id":"reverseEngineering.motionFrame","params":{"frameIndex":5}}));
     assert_eq!(d.app().ui.panels.reverse_engineering.capture.as_ref(), report.captures.get(5));
     d.wait_for("reverseEngineering.frame");
-    let elements = d.ok("ui.elements", json!({"prefix":"reverseEngineering.selection"}));
+    let elements = d.ok("ui.elements", json!({"prefix":"reverseEngineering.motionNext"}));
     let rect = &elements[0]["rect"];
     d.ok("ui.scroll", json!({"x":rect[0].as_f64().unwrap()+80.0,"y":rect[1].as_f64().unwrap()+20.0,"dx":0.0,"dy":-450.0}));
     d.frames(20);
     d.snapshot("panels-reverse-engineering-motion", Some("reverseEngineering."));
+}
+
+#[test]
+fn reverse_engineering_range_crosses_clip_boundary_without_changing_project() {
+    let mut d = Driver::demo();
+    let sequence_id = d.app().session.state.active_sequence.unwrap();
+    let rate = d.app().session.active_sequence().unwrap().settings.frame_rate;
+    let mut first = d.app().session.active_sequence().unwrap().video_tracks[0].items[0].clone();
+    first.start = filmcraft_time::Tick::ZERO;
+    first.duration = rate.tick_of(3);
+    let mut second = first.clone();
+    second.id = filmcraft_project::ClipId(u64::MAX - 1);
+    second.start = first.end();
+    second.source_in = rate.tick_of(30);
+    Arc::make_mut(&mut d.app().session.project).sequence_mut(sequence_id).unwrap().video_tracks[0].items = vec![first.clone(), second.clone()];
+    d.app().session.state.selection = vec![first.id, second.id];
+    d.ok("ui.panel.show", json!({"panel":"ReverseEngineering"}));
+    d.frames(3);
+    let original = serde_json::to_value(&*d.app().session.project).unwrap();
+    d.ok("ui.menu.invoke", json!({"id":"reverseEngineering.setRange","params":{"startFrame":2,"endFrame":4}}));
+    d.app().ui.panels.reverse_engineering.sample_interval = 1;
+    d.ok("ui.menu.invoke", json!({"id":"reverseEngineering.extractRange"}));
+    let captures = d.app().ui.panels.reverse_engineering.samples.clone();
+    assert_eq!(captures.len(), 3);
+    for (capture, frame) in captures.iter().zip(2..=4) {
+        assert_eq!(capture.item, sequence_id);
+        assert_eq!(capture.media_time, rate.tick_of(frame));
+        assert_eq!(capture.timeline_time, rate.tick_of(frame));
+    }
+    assert_eq!(serde_json::to_value(&*d.app().session.project).unwrap(), original);
 }

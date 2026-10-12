@@ -236,12 +236,18 @@ pub struct ReverseEngineeringState {
     pub capture: Option<ReverseEngineeringCapture>,
     pub range_mode: bool,
     pub range_clip: Option<filmcraft_project::ClipId>,
+    pub range_sequence: Option<filmcraft_project::ItemId>,
     pub start_frame: i64,
     pub end_frame: i64,
     #[serde(default = "default_sample_interval")]
     pub sample_interval: i64,
     pub samples: Vec<ReverseEngineeringCapture>,
     pub motion: Option<super::reverse_motion::MotionReport>,
+    pub active_tool: String,
+    pub global_motion: Option<super::reverse_tools::GlobalReport>,
+    pub saved_results: Vec<super::reverse_tools::SavedResult>,
+    pub global_tolerance: f64,
+    pub global_show_support: bool,
 }
 
 fn default_sample_interval() -> i64 {
@@ -259,6 +265,21 @@ pub struct ReverseEngineeringCapture {
 
 impl Default for ReverseEngineeringState {
     fn default() -> Self {
-        Self { capture: None, range_mode: true, range_clip: None, start_frame: 0, end_frame: 0, sample_interval: 30, samples: Vec::new(), motion: None }
+        Self {
+            capture: None,
+            range_mode: true,
+            range_clip: None,
+            range_sequence: None,
+            start_frame: 0,
+            end_frame: 0,
+            sample_interval: 30,
+            samples: Vec::new(),
+            motion: None,
+            active_tool: "menu".into(),
+            global_motion: None,
+            saved_results: Vec::new(),
+            global_tolerance: 0.5,
+            global_show_support: false,
+        }
     }
 }

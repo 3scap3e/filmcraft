@@ -5,3 +5,6 @@ plan/
 /log
 .DS_Store
 .claude/worktrees/
+
+# Local analytical result sidecars (export intentionally to share).
+*.fcproj.analysis.json

@@ -39,6 +39,7 @@ pub mod reference;
 pub mod remix;
 pub mod reverse_engineering;
 pub(crate) mod reverse_motion;
+pub(crate) mod reverse_tools;
 pub mod scopes;
 pub mod sequence_settings;
 pub mod settings;

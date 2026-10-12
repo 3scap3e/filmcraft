@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 
 pub mod audit;
 pub mod display;
+pub mod global_motion;
 pub mod sea_raft;
 pub use sea_raft::SeaRaft;
 pub const SIZE: usize = sea_raft::MAX_SIZE;

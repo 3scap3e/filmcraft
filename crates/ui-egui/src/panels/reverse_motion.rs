@@ -71,6 +71,9 @@ fn start_job(
     if ctx.data(|d| d.get_temp::<Job>(job_id())).is_some() {
         return Err("Cancel the current motion analysis before starting another.".into());
     }
+    if super::reverse_tools::is_running(ctx) {
+        return Err("Cancel global fitting before starting optical-flow analysis".into());
+    }
     if cfg!(target_arch = "wasm32") {
         return Err("Local motion analysis currently requires the desktop app.".into());
     }
@@ -84,7 +87,7 @@ fn start_job(
     let report = MotionReport {
         schema_version: 5,
         analyzer: "filmcraft-vision/sea-raft-M".into(),
-        settings: json!({"model":"SEA-RAFT M","maximumAnalysisDimension":640,"inference":"dense optical flow","exportGridSpacing":16,"vectorExport":"samples of dense model flow","refinementIterations":4,"timelineFrameStep":1,"coordinateSpace":"normalized source image","appearanceChangeThreshold":2}),
+        settings: json!({"model":"SEA-RAFT M","maximumAnalysisDimension":640,"inference":"dense optical flow","exportGridSpacing":16,"vectorExport":"samples of dense model flow","refinementIterations":4,"timelineFrameStep":1,"coordinateSpace":"normalized rendered timeline image","appearanceChangeThreshold":2,"timelineProjectRevision":app.session.revision}),
         timeline_frame_rate: serde_json::to_value(rate).map_err(|e| e.to_string())?,
         source_frame_rate: serde_json::to_value(source.frame_rate()).map_err(|e| e.to_string())?,
         source_size: [width, height],
@@ -98,7 +101,7 @@ fn start_job(
             "Independent frame-pair vectors, not persistent object identities.".into(),
             "Learned flow is an estimate; cuts, occlusion, flat regions and changing illumination can produce errors. JSON vectors sample dense predictions on a 16-pixel grid; uncertainty is a model log-scale estimate, not a calibrated confidence probability."
                 .into(),
-            "Source frames before timeline effects; samples follow timeline speed, reverse and frame hold.".into(),
+            "Rendered timeline frames, including compositing, effects, clip boundaries and empty gaps. Flow across a cut is not continuous physical motion.".into(),
         ],
     };
     let job = Job {
@@ -191,6 +194,7 @@ fn start_job(
 }
 
 pub fn poll(app: &mut FilmcraftApp, ctx: &egui::Context) {
+    super::reverse_tools::poll(app, ctx);
     let Some(job) = ctx.data(|d| d.get_temp::<Job>(job_id())) else {
         return;
     };
@@ -228,12 +232,20 @@ pub fn poll(app: &mut FilmcraftApp, ctx: &egui::Context) {
                 report.schema_version = 5;
                 app.ui.panels.reverse_engineering.capture = report.captures.get(selected_frame).cloned();
                 app.ui.panels.reverse_engineering.motion = Some(report);
+                app.ui.panels.reverse_engineering.global_motion = None;
                 ctx.data_mut(|d| {
                     d.insert_temp(index_id(), selected_frame.saturating_sub(1));
                     d.insert_temp(frame_id(), selected_frame);
                     d.remove::<(usize, usize)>(sample_id());
                 });
                 super::reverse_engineering::reset_decode_timer(ctx);
+                if app.ui.panels.reverse_engineering.active_tool == "globalMotion" && super::reverse_engineering::motion_is_current(app) {
+                    if let Err(error) = super::reverse_tools::command(app, ctx, "reverseEngineering.runGlobal", &json!({})) {
+                        app.ui.status = error.clone();
+                        ctx.data_mut(|d| d.insert_temp(error_id(), error));
+                        return;
+                    }
+                }
                 app.ui.status = if selected_frame > 0 {
                     format!(
                         "Frame {} reanalysis complete · revision {}",
@@ -361,9 +373,10 @@ fn invoke(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, params: Value) 
 
 pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui) {
     ui.separator();
+    ui.heading("SEA-RAFT optical flow");
     if let Some(job) = ui.ctx().data(|d| d.get_temp::<Job>(job_id())) {
         let progress = job.progress.load(Ordering::Relaxed);
-        ui.label(format!("2. Analyzing · {progress} / {} source frames", job.total));
+        ui.label(format!("Analyzing · {progress} / {} source frames", job.total));
         let response = ui.button("Cancel analysis");
         app.auto.add("reverseEngineering.cancelMotion", response.rect, "Cancel analysis");
         if response.clicked() {
@@ -375,13 +388,13 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui) {
     if !current && app.ui.panels.reverse_engineering.motion.is_some() {
         ui.label("Range changed — analyze again. Previous results are hidden.");
     }
-    let response = ui.button(if current { "Reanalyze entire range" } else { "2. Analyze selected range · every frame" });
+    let response = ui.button(if current { "Reanalyze entire range" } else { "Retry analysis" });
     app.auto.add("reverseEngineering.analyzeMotion", response.rect, "Analyze every selected frame");
     if response.clicked() {
         invoke(app, ui.ctx(), "reverseEngineering.analyzeMotion", json!({}));
     }
     if current {
-        ui.label("3. Inspect results · select a thumbnail or jump to a frame below");
+        ui.label("Inspect results · select a thumbnail or jump to a frame below");
         if ui.ctx().data(|d| d.get_temp::<usize>(frame_id())).unwrap_or(0) > 0 {
             display_controls(app, ui);
             ui.label("Overlay edits update immediately; they do not change SEA-RAFT predictions.");
@@ -401,13 +414,15 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui) {
 
 /// Fixed inspection area: navigation and its preview stay visible together.
 pub fn show_result(app: &mut FilmcraftApp, ui: &mut egui::Ui) {
-    if !super::reverse_engineering::motion_is_current(app) || is_running(ui.ctx()) {
+    if !super::reverse_tools::results_visible(app, ui.ctx()) {
         return;
     }
     let Some(report) = app.ui.panels.reverse_engineering.motion.as_ref() else {
         return;
     };
-    if let Some(run) = report.audit.completed_runs.last() {
+    if app.ui.panels.reverse_engineering.active_tool == "opticalFlow"
+        && let Some(run) = report.audit.completed_runs.last()
+    {
         let seconds = (run.completed_at_unix_ms / 1000) % 86400;
         let scope = run.frame_number.map(|n| format!("frame {n}")).unwrap_or_else(|| "entire range".into());
         ui.label(format!("Completed {scope} · {:02}:{:02}:{:02} UTC · revision {}", seconds / 3600, (seconds / 60) % 60, seconds % 60, run.revision));
@@ -431,10 +446,10 @@ pub fn show_result(app: &mut FilmcraftApp, ui: &mut egui::Ui) {
                 invoke(app, ui.ctx(), "reverseEngineering.motionFrame", json!({"frameIndex":target}));
             }
         }
-        let response = ui.button("Export JSON");
+        let response = ui.button("Export this tool");
         app.auto.add("reverseEngineering.exportMotion", response.rect, "Export model results and separate display settings");
         if response.clicked() {
-            invoke(app, ui.ctx(), "reverseEngineering.exportMotion", json!({}));
+            invoke(app, ui.ctx(), "reverseEngineering.exportTool", json!({}));
         }
     });
     ui.horizontal_wrapped(|ui| {
@@ -481,8 +496,13 @@ pub fn show_result(app: &mut FilmcraftApp, ui: &mut egui::Ui) {
         app.auto.add("reverseEngineering.timecode", response.rect, "Exact timestamp of the displayed analyzed frame");
         if frame > 0 {
             if let Some(pair) = app.ui.panels.reverse_engineering.motion.as_ref().and_then(|r| r.pairs.get(frame - 1)) {
-                ui.label(format!("Motion: frame {} → {} · {} SEA-RAFT samples", frame, frame + 1, pair.vectors.len()));
-                if let Some((selected_pair, sample)) = ui.ctx().data(|d| d.get_temp::<(usize, usize)>(sample_id()))
+                if app.ui.panels.reverse_engineering.active_tool == "globalMotion" {
+                    super::reverse_tools::caption(app, ui, frame - 1);
+                } else {
+                    ui.label(format!("Motion: frame {} → {} · {} SEA-RAFT samples", frame, frame + 1, pair.vectors.len()));
+                }
+                if app.ui.panels.reverse_engineering.active_tool == "opticalFlow"
+                    && let Some((selected_pair, sample)) = ui.ctx().data(|d| d.get_temp::<(usize, usize)>(sample_id()))
                     && selected_pair == frame - 1
                     && let Some(vector) = pair.vectors.get(sample)
                 {
@@ -501,6 +521,18 @@ pub fn show_result(app: &mut FilmcraftApp, ui: &mut egui::Ui) {
 }
 
 pub fn overlay(app: &mut FilmcraftApp, ui: &egui::Ui, capture: &ReverseEngineeringCapture, rect: egui::Rect) {
+    let tool = app.ui.panels.reverse_engineering.active_tool.as_str();
+    if tool == "globalMotion" {
+        let frame = ui.ctx().data(|d| d.get_temp::<usize>(frame_id())).unwrap_or(0);
+        if frame > 0 {
+            super::reverse_tools::overlay(app, ui, frame - 1, rect);
+        }
+        return;
+    }
+    if tool != "opticalFlow" {
+        return;
+    }
+
     if ui.ctx().data(|d| d.get_temp::<usize>(frame_id())).unwrap_or(0) == 0 || !super::reverse_engineering::motion_is_current(app) || is_running(ui.ctx()) {
         return;
     }
