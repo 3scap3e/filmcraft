@@ -110,6 +110,9 @@ mod native {
     }
     impl SeaRaft {
         pub fn start(cancel: &AtomicBool) -> Result<Self, String> {
+            Self::start_with_device(cancel, crate::execution::Device::Auto)
+        }
+        pub fn start_with_device(cancel: &AtomicBool, device: crate::execution::Device) -> Result<Self, String> {
             let directory = runtime_directory()?;
             let python = if cfg!(target_os = "windows") { directory.join("venv-arm/Scripts/python.exe") } else { directory.join("venv-arm/bin/python") };
             let script = directory.join("worker.py");
@@ -120,6 +123,7 @@ mod native {
                 ));
             }
             let mut child = Command::new(python)
+                .env("FILMCRAFT_SEA_RAFT_DEVICE", device.as_str())
                 .arg("-u")
                 .arg(script)
                 .current_dir(&directory)
@@ -248,6 +252,9 @@ pub struct SeaRaft {
 }
 #[cfg(target_arch = "wasm32")]
 impl SeaRaft {
+    pub fn start_with_device(_: &AtomicBool, _: crate::execution::Device) -> Result<Self, String> {
+        Err("SEA-RAFT requires the desktop app".into())
+    }
     pub fn start(_: &AtomicBool) -> Result<Self, String> {
         Err("SEA-RAFT requires the desktop app".into())
     }

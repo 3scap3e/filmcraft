@@ -72,6 +72,35 @@ fn prepare_range(app: &mut FilmcraftApp, clip: &TimelineSource) -> i64 {
     last
 }
 
+pub(super) fn range_captures(app: &FilmcraftApp, limit: usize) -> Result<Vec<ReverseEngineeringCapture>, String> {
+    let source = selected_clip(app)?;
+    let sequence = app.session.active_sequence().ok_or("No sequence")?;
+    let state = &app.ui.panels.reverse_engineering;
+    let rate = sequence.settings.frame_rate;
+    let count = state.end_frame.saturating_sub(state.start_frame).saturating_add(1);
+    if state.start_frame < 0 || count < 2 || count as u64 > limit as u64 || state.end_frame > rate.frame_at(source.end() - Tick(1)) {
+        return Err(if limit == usize::MAX {
+            "Choose a valid timeline range with at least two frames".into()
+        } else {
+            format!("Choose a range of 2–{limit} frames")
+        });
+    }
+    let length = usize::try_from(count).map_err(|_| "Range length cannot be represented")?;
+    if std::mem::size_of::<ReverseEngineeringCapture>()
+        .checked_add(source.name.len())
+        .and_then(|size| length.checked_mul(size))
+        .is_none_or(|bytes| bytes > 512 * 1024 * 1024)
+    {
+        return Err("Timeline metadata exceeds the working-memory budget".into());
+    }
+    let mut captures = Vec::new();
+    captures.try_reserve_exact(length).map_err(|e| format!("Cannot allocate range metadata: {e}"))?;
+    for frame in state.start_frame..=state.end_frame {
+        captures.push(capture_at(&source, rate.tick_of(frame))?);
+    }
+    Ok(captures)
+}
+
 pub(super) fn reset_decode_timer(ctx: &egui::Context) {
     let now = ctx.input(|input| input.time);
     ctx.data_mut(|data| data.insert_temp(egui::Id::new("reverse-engineering-requested-at"), now));
@@ -79,12 +108,37 @@ pub(super) fn reset_decode_timer(ctx: &egui::Context) {
 }
 
 pub fn command(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, params: &Value) -> Result<Value, String> {
+    if id == "reverseEngineering.confirmRangeChange" {
+        return super::reverse_range::confirm(app, ctx, params);
+    }
+    if super::reverse_range::pending(ctx) && id != "reverseEngineering.setRange" {
+        return Err("Confirm or cancel the pending range change first".into());
+    }
+    if matches!(
+        id,
+        "reverseEngineering.runTracking"
+            | "reverseEngineering.cancelTracking"
+            | "reverseEngineering.setTrackingMode"
+            | "reverseEngineering.addTrackingPoint"
+            | "reverseEngineering.clearTrackingPoints"
+            | "reverseEngineering.trackingFrame"
+    ) {
+        return super::reverse_tracking::command(app, ctx, id, params);
+    }
+    if super::reverse_tracking::is_running(ctx) {
+        return Err("Cancel point tracking before changing the range or tools".into());
+    }
     if matches!(
         id,
         "reverseEngineering.chooseTool"
             | "reverseEngineering.runGlobal"
+            | "reverseEngineering.runLocal"
+            | "reverseEngineering.runRegions"
+            | "reverseEngineering.setRegionOptions"
+            | "reverseEngineering.setLocalView"
             | "reverseEngineering.cancelGlobal"
             | "reverseEngineering.setGlobalOptions"
+            | "reverseEngineering.setExecutionDevice"
             | "reverseEngineering.saveToolResult"
             | "reverseEngineering.deleteToolResult"
             | "reverseEngineering.exportTool"
@@ -176,6 +230,9 @@ pub fn command(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, params: &V
         if start < 0 || end < start || end > last {
             return Err("Choose timestamps inside the timeline, with end at or after start.".into());
         }
+        if super::reverse_range::request(app, ctx, start, end) {
+            return Ok(json!({"confirmationRequired":true,"startFrame":start,"endFrame":end}));
+        }
         let state = &mut app.ui.panels.reverse_engineering;
         state.start_frame = start;
         state.end_frame = end;
@@ -197,13 +254,8 @@ pub fn command(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, params: &V
     if matches!(id, "reverseEngineering.markStart" | "reverseEngineering.markEnd") {
         capture_at(&clip, app.session.playhead())?;
         let frame = rate.frame_at(app.session.playhead()).saturating_sub(rate.frame_at(clip.start));
-        let state = &mut app.ui.panels.reverse_engineering;
-        if id == "reverseEngineering.markStart" {
-            state.start_frame = frame;
-        } else {
-            state.end_frame = frame;
-        }
-        return Ok(json!({"frame":frame}));
+        let key = if id == "reverseEngineering.markStart" { "startFrame" } else { "endFrame" };
+        return command(app, ctx, "reverseEngineering.setRange", &json!({key:frame}));
     }
     if id != "reverseEngineering.extractRange" {
         return Err(format!("Unknown reverse-engineering command: {id}"));
@@ -284,7 +336,11 @@ pub(super) fn picture(app: &mut FilmcraftApp, ui: &mut egui::Ui, capture: &Rever
         let response = ui.add(image);
         app.auto.add(id, response.rect, &capture.name);
         if id == "reverseEngineering.frame" {
-            super::reverse_motion::overlay(app, ui, capture, response.rect);
+            if app.ui.panels.reverse_engineering.active_tool == "trajectories" {
+                super::reverse_tracking::overlay(app, ui, response.rect);
+            } else {
+                super::reverse_motion::overlay(app, ui, capture, response.rect);
+            }
         }
         response.clicked()
     } else {
@@ -306,6 +362,53 @@ pub(super) fn picture(app: &mut FilmcraftApp, ui: &mut egui::Ui, capture: &Rever
     }
 }
 
+pub(super) fn selected_picture(app: &mut FilmcraftApp, ui: &mut egui::Ui, capture: &ReverseEngineeringCapture, reserve: f32) {
+    let height = (ui.available_height() - reserve).max(1.0);
+    let rect = Rect::from_min_size(ui.cursor().min, vec2(ui.available_width().max(1.0), height));
+    let clip = rect.intersect(ui.clip_rect());
+    ui.scope_builder(egui::UiBuilder::new().max_rect(rect), |image_ui| {
+        image_ui.set_clip_rect(clip);
+        picture(app, image_ui, capture, 640, "reverseEngineering.frame", false);
+    });
+}
+
+/// A horizontal, virtualized strip shared by all tools.
+pub(super) fn frame_strip(app: &mut FilmcraftApp, ui: &mut egui::Ui, captures: &[ReverseEngineeringCapture], selected: usize, tracking: bool) {
+    let busy = super::reverse_tracking::is_running(ui.ctx());
+    let cell_width = 84.0;
+    let prefix = if tracking { "reverseEngineering.tracking" } else { "reverseEngineering" };
+    egui::ScrollArea::horizontal().auto_shrink([false, true]).id_salt(("reverse-results-filmstrip", tracking)).max_height(92.0).show_viewport(
+        ui,
+        |ui, viewport| {
+            ui.set_min_width(captures.len() as f32 * cell_width);
+            let first = ((viewport.min.x.max(0.0) / cell_width).floor() as usize).min(captures.len());
+            let last = first.saturating_add((viewport.width().max(0.0) / cell_width).ceil() as usize).saturating_add(2).min(captures.len());
+            ui.spacing_mut().item_spacing.x = 8.0;
+            ui.horizontal(|ui| {
+                if first > 0 {
+                    ui.allocate_space(vec2((first as f32 * cell_width - 8.0).max(0.0), 76.0));
+                }
+                for index in first..last {
+                    let Some(capture) = captures.get(index) else {
+                        continue;
+                    };
+                    ui.vertical(|ui| {
+                        ui.set_width(76.0);
+                        let response = ui.add_enabled(!busy, egui::Button::new(format!("{}", index + 1)).selected(selected == index));
+                        app.auto.add(&format!("{prefix}.resultFrame.{index}"), response.rect, "Select range frame");
+                        let thumbnail_clicked = picture(app, ui, capture, 96, &format!("{prefix}.resultThumbnail.{index}"), !busy);
+                        let clicked = response.clicked() || thumbnail_clicked;
+                        if clicked && !busy {
+                            let command = if tracking { "reverseEngineering.trackingFrame" } else { "reverseEngineering.motionFrame" };
+                            invoke(app, ui.ctx(), command, json!({"frameIndex":index}));
+                        }
+                    });
+                }
+            });
+        },
+    );
+}
+
 /// Range gesture on the actual timeline clip. Leaves ruler scrubbing and ordinary
 /// editing untouched when Range mode is off; the isolated hook is called before clip editing.
 pub fn timeline_range(
@@ -318,9 +421,10 @@ pub fn timeline_range(
     if !app.ui.panels.reverse_engineering.range_mode || !app.ui.dock.is_visible(crate::dock::PanelKind::ReverseEngineering) {
         return false;
     }
-    if super::reverse_motion::is_running(ui.ctx()) || super::reverse_tools::is_running(ui.ctx()) {
-        return false;
-    }
+    let busy = super::reverse_motion::is_running(ui.ctx())
+        || super::reverse_tools::is_running(ui.ctx())
+        || super::reverse_tracking::is_running(ui.ctx())
+        || super::reverse_range::pending(ui.ctx());
     let Ok(clip) = selected_clip(app) else { return false };
     let rect = Rect::from_min_max(egui::pos2(layout.x_of(Tick::ZERO), video_area.top()), egui::pos2(layout.x_of(clip.end()), video_area.bottom()))
         .intersect(layout.content)
@@ -334,7 +438,9 @@ pub fn timeline_range(
     let base = rate.frame_at(clip.start);
     let x_at = |frame: i64| layout.x_of(rate.tick_of(base.saturating_add(frame.clamp(0, last))));
     let state = &app.ui.panels.reverse_engineering;
-    let (left, right) = (x_at(state.start_frame), x_at(state.end_frame.saturating_add(1)).max(x_at(state.end_frame) + 2.0));
+    let (display_start, display_end) =
+        ui.ctx().data(|d| d.get_temp::<(i64, i64)>(egui::Id::new("reverse-range-drag-preview"))).unwrap_or((state.start_frame, state.end_frame));
+    let (left, right) = (x_at(display_start), x_at(display_end.saturating_add(1)).max(x_at(display_end) + 2.0));
     let selected = Rect::from_min_max(egui::pos2(left, rect.top()), egui::pos2(right, rect.bottom())).intersect(rect);
     ui.painter().rect_filled(selected, 0.0, app.tokens.accent.gamma_multiply(0.25));
     ui.painter().rect_stroke(selected, 0.0, egui::Stroke::new(2.0, app.tokens.accent), egui::StrokeKind::Inside);
@@ -345,6 +451,11 @@ pub fn timeline_range(
         app.auto.add(id, handle, "Drag range boundary");
     }
     let drag_id = egui::Id::new(("reverse-engineering-timeline-drag", clip.id.0));
+    if busy {
+        // Keep the selected range visible; only its editing gesture is disabled.
+        ui.ctx().data_mut(|data| data.remove::<i64>(drag_id));
+        return false;
+    }
     let (pressed, down, released, origin, pointer) = ui.input(|input| {
         (
             input.pointer.primary_pressed(),
@@ -374,12 +485,19 @@ pub fn timeline_range(
                 i64::MAX => (state.start_frame, frame.max(state.start_frame)),
                 anchor => (anchor.min(frame), anchor.max(frame)),
             };
-            invoke(app, ui.ctx(), "reverseEngineering.setRange", json!({"startFrame":start,"endFrame":end}));
+            ui.ctx().data_mut(|d| d.insert_temp(egui::Id::new("reverse-range-drag-preview"), (start, end)));
             app.session.set_playhead(rate.tick_of(base.saturating_add(frame)));
             ui.ctx().request_repaint();
         }
         if released || !down {
-            ui.ctx().data_mut(|data| data.remove::<i64>(drag_id));
+            let candidate = ui.ctx().data(|d| d.get_temp::<(i64, i64)>(egui::Id::new("reverse-range-drag-preview")));
+            ui.ctx().data_mut(|data| {
+                data.remove::<i64>(drag_id);
+                data.remove::<(i64, i64)>(egui::Id::new("reverse-range-drag-preview"));
+            });
+            if let Some((start, end)) = candidate {
+                invoke(app, ui.ctx(), "reverseEngineering.setRange", json!({"startFrame":start,"endFrame":end}));
+            }
         }
         ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
         return true;
@@ -406,7 +524,6 @@ pub(super) fn captures_are_current(app: &FilmcraftApp, captures: &[ReverseEngine
     let base = rate.frame_at(clip.start);
     let count = state.end_frame.saturating_sub(state.start_frame).saturating_add(1);
     count > 0
-        && count <= 300
         && captures.len() as i64 == count
         && captures.iter().enumerate().all(|(index, capture)| {
             capture_at(&clip, rate.tick_of(base.saturating_add(state.start_frame).saturating_add(index as i64))).ok().as_ref() == Some(capture)
@@ -428,10 +545,15 @@ pub(super) fn motion_is_current(app: &FilmcraftApp) -> bool {
 pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let bounds = rect.shrink2(vec2(12.0, 10.0));
     let inspect_motion = app.ui.panels.reverse_engineering.range_mode && super::reverse_tools::results_visible(app, ui.ctx());
-    let split = bounds.top() + bounds.height() * 0.32;
-    let controls = if inspect_motion { Rect::from_min_max(bounds.min, egui::pos2(bounds.right(), split)) } else { bounds };
+    let gap = 12.0f32.min(bounds.width().max(0.0));
+    let left_width = ((bounds.width() - gap).max(0.0) * 0.40).max(1.0);
+    let controls = Rect::from_min_max(bounds.min, egui::pos2(bounds.left() + left_width, bounds.bottom()));
+    let results = Rect::from_min_max(egui::pos2(controls.right() + gap, bounds.top()), bounds.max);
     let mut child = ui.new_child(egui::UiBuilder::new().max_rect(controls));
-    egui::ScrollArea::vertical().id_salt("reverse-engineering-scroll").show(&mut child, |ui| {
+    child.set_clip_rect(controls.intersect(ui.clip_rect()));
+    child.style_mut().wrap_mode = Some(egui::TextWrapMode::Wrap);
+    egui::ScrollArea::vertical().auto_shrink([false, false]).id_salt("reverse-engineering-scroll").show(&mut child, |ui| {
+        ui.set_width(controls.width().max(1.0));
         ui.label(egui::RichText::new(tl!("Reverse Engineering")).color(app.tokens.text));
         let intro = tl!("Inspect scenes, camera, lighting and motion.");
         let response = ui.label(egui::RichText::new(intro).color(app.tokens.text_faint));
@@ -444,7 +566,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
             app.auto.add("reverseEngineering.selection", response.rect, &label);
         }
         if app.ui.panels.reverse_engineering.active_tool == "menu" {
-            ui.horizontal(|ui| {
+            ui.horizontal_wrapped(|ui| {
                 for (range, label, id) in [(false, "Single image", "reverseEngineering.mode.frame"), (true, "Analyze range", "reverseEngineering.mode.range")] {
                     let response = ui.selectable_value(&mut app.ui.panels.reverse_engineering.range_mode, range, label);
                     app.auto.add(id, response.rect, label);
@@ -460,46 +582,53 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                 }
                 let drop_frame = app.session.active_sequence().is_some_and(|sequence| sequence.settings.drop_frame);
                 if app.ui.panels.reverse_engineering.active_tool == "menu" {
-                    ui.add_enabled_ui(!(super::reverse_motion::is_running(ui.ctx()) || super::reverse_tools::is_running(ui.ctx())), |ui| {
-                        egui::Grid::new("reverse-engineering-range-controls").num_columns(2).show(ui, |ui| {
-                            for (start, label, id, mark) in [
-                                (true, "Start", "reverseEngineering.range.start", "reverseEngineering.markStart"),
-                                (false, "End", "reverseEngineering.range.end", "reverseEngineering.markEnd"),
-                            ] {
-                                ui.label(label);
-                                ui.horizontal(|ui| {
-                                    let frame = if start { app.ui.panels.reverse_engineering.start_frame } else { app.ui.panels.reverse_engineering.end_frame };
-                                    let text = format_time(
-                                        rate.tick_of(rate.frame_at(clip.start).saturating_add(frame)),
-                                        rate,
-                                        drop_frame,
-                                        TimeDisplay::Timecode,
-                                        48000,
-                                    );
-                                    let draft_id = egui::Id::new(("reverse-engineering-timestamp", clip.id.0, start));
-                                    let mut draft = ui.ctx().data(|data| data.get_temp::<String>(draft_id)).unwrap_or(text.clone());
-                                    let response = ui.add(egui::TextEdit::singleline(&mut draft).desired_width(110.0).hint_text("HH:MM:SS:FF").id(draft_id));
-                                    app.auto.add(id, response.rect, &draft);
-                                    let commit = response.lost_focus() || (response.has_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter)));
-                                    if commit && draft != text {
-                                        let key = if start { "startTimecode" } else { "endTimecode" };
-                                        invoke(app, ui.ctx(), "reverseEngineering.setRange", json!({key: draft}));
-                                    }
-                                    if response.has_focus() {
-                                        ui.ctx().data_mut(|data| data.insert_temp(draft_id, draft));
-                                    } else {
-                                        ui.ctx().data_mut(|data| data.remove::<String>(draft_id));
-                                    }
-                                    let response = ui.add_enabled(capture_at(clip, app.session.playhead()).is_ok(), egui::Button::new("Use playhead"));
-                                    app.auto.add(mark, response.rect, "Use playhead");
-                                    if response.clicked() {
-                                        invoke(app, ui.ctx(), mark, json!({}));
-                                    }
-                                });
-                                ui.end_row();
-                            }
-                        });
-                    });
+                    ui.add_enabled_ui(
+                        !(super::reverse_motion::is_running(ui.ctx())
+                            || super::reverse_tools::is_running(ui.ctx())
+                            || super::reverse_tracking::is_running(ui.ctx())),
+                        |ui| {
+                            ui.vertical(|ui| {
+                                for (start, label, id, mark) in [
+                                    (true, "Start", "reverseEngineering.range.start", "reverseEngineering.markStart"),
+                                    (false, "End", "reverseEngineering.range.end", "reverseEngineering.markEnd"),
+                                ] {
+                                    ui.label(label);
+                                    ui.horizontal_wrapped(|ui| {
+                                        let frame =
+                                            if start { app.ui.panels.reverse_engineering.start_frame } else { app.ui.panels.reverse_engineering.end_frame };
+                                        let text = format_time(
+                                            rate.tick_of(rate.frame_at(clip.start).saturating_add(frame)),
+                                            rate,
+                                            drop_frame,
+                                            TimeDisplay::Timecode,
+                                            48000,
+                                        );
+                                        let draft_id = egui::Id::new(("reverse-engineering-timestamp", clip.id.0, start));
+                                        let mut draft = ui.ctx().data(|data| data.get_temp::<String>(draft_id)).unwrap_or(text.clone());
+                                        let response =
+                                            ui.add(egui::TextEdit::singleline(&mut draft).desired_width(110.0).hint_text("HH:MM:SS:FF").id(draft_id));
+                                        app.auto.add(id, response.rect, &draft);
+                                        let commit = response.lost_focus() || (response.has_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter)));
+                                        if commit && draft != text {
+                                            let key = if start { "startTimecode" } else { "endTimecode" };
+                                            invoke(app, ui.ctx(), "reverseEngineering.setRange", json!({key: draft}));
+                                        }
+                                        if response.has_focus() {
+                                            ui.ctx().data_mut(|data| data.insert_temp(draft_id, draft));
+                                        } else {
+                                            ui.ctx().data_mut(|data| data.remove::<String>(draft_id));
+                                        }
+                                        let response = ui.add_enabled(capture_at(clip, app.session.playhead()).is_ok(), egui::Button::new("Use playhead"));
+                                        app.auto.add(mark, response.rect, "Use playhead");
+                                        if response.clicked() {
+                                            invoke(app, ui.ctx(), mark, json!({}));
+                                        }
+                                    });
+                                    ui.add_space(4.0);
+                                }
+                            });
+                        },
+                    );
                 }
                 if let Some(Some(error)) = ui.ctx().data(|data| data.get_temp::<Option<String>>(egui::Id::new("reverse-engineering-range-error"))) {
                     ui.colored_label(egui::Color32::LIGHT_RED, error);
@@ -526,22 +655,46 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
             }
             super::reverse_tools::show(app, ui);
         }
-        if !app.ui.panels.reverse_engineering.range_mode
-            && let Some(capture) = app.ui.panels.reverse_engineering.capture.clone()
-        {
+        if inspect_motion {
             ui.separator();
+            if app.ui.panels.reverse_engineering.active_tool == "trajectories" {
+                super::reverse_tracking::show_result_controls(app, ui);
+            } else {
+                super::reverse_motion::show_result_controls(app, ui);
+            }
+        } else if !app.ui.panels.reverse_engineering.range_mode
+            && let Some(capture) = app.ui.panels.reverse_engineering.capture.as_ref()
+        {
             ui.label(&capture.name);
-            let label = timecode(app, &capture);
-            let response = ui.label(&label);
-            app.auto.add("reverseEngineering.timecode", response.rect, &label);
-            picture(app, ui, &capture, 640, "reverseEngineering.frame", false);
+            let label = timecode(app, capture);
+            let response = ui.label(label);
+            app.auto.add("reverseEngineering.timecode", response.rect, "Timestamp of the captured frame");
         }
     });
+    let mut result_ui = ui.new_child(egui::UiBuilder::new().max_rect(results));
+    result_ui.set_clip_rect(results.intersect(ui.clip_rect()));
+    result_ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Wrap);
     if inspect_motion {
-        let results = Rect::from_min_max(egui::pos2(bounds.left(), split + 8.0), bounds.max);
-        let mut result_ui = ui.new_child(egui::UiBuilder::new().max_rect(results));
-        super::reverse_motion::show_result(app, &mut result_ui);
+        if app.ui.panels.reverse_engineering.active_tool == "trajectories" {
+            super::reverse_tracking::show_result(app, &mut result_ui);
+        } else {
+            super::reverse_motion::show_result(app, &mut result_ui);
+        }
+    } else {
+        let capture = app
+            .ui
+            .panels
+            .reverse_engineering
+            .capture
+            .clone()
+            .or_else(|| selected_clip(app).ok().and_then(|source| capture_at(&source, app.session.playhead()).ok()));
+        if let Some(capture) = capture {
+            selected_picture(app, &mut result_ui, &capture, 0.0);
+        } else {
+            result_ui.label("Select timeline content to inspect a frame.");
+        }
     }
+    super::reverse_range::show(app, ui.ctx());
 }
 
 #[cfg(test)]

@@ -67,7 +67,11 @@ impl Driver {
     fn ok(&mut self, method: &str, params: Value) -> Value {
         let v = self.call(method, params.clone());
         assert_eq!(v["ok"], json!(true), "{method} {params} failed: {v}");
-        v["result"].clone()
+        let result = v["result"].clone();
+        if result.get("confirmationRequired").and_then(Value::as_bool) == Some(true) {
+            return self.ok("ui.menu.invoke", json!({"id":"reverseEngineering.confirmRangeChange","params":{"accept":true}}));
+        }
+        result
     }
 
     fn exec(&mut self, command: &str, params: Value) -> Value {
@@ -608,6 +612,7 @@ fn reverse_engineering_range_drag_and_exact_timestamps_stay_in_sync() {
     let (x, y, w, h) = (rect[0].as_f64().unwrap(), rect[1].as_f64().unwrap(), rect[2].as_f64().unwrap(), rect[3].as_f64().unwrap());
     d.ok("ui.drag", json!({"from":{"x":x+w*0.25,"y":y+h*0.5},"to":{"x":x+w*0.75,"y":y+h*0.5},"steps":10}));
     d.frames(15);
+    d.ok("ui.menu.invoke", json!({"id":"reverseEngineering.confirmRangeChange","params":{"accept":true}}));
     let state = &d.app().ui.panels.reverse_engineering;
     assert!((state.start_frame - (last as f64 * 0.25).round() as i64).abs() <= 1);
     assert!((state.end_frame - (last as f64 * 0.75).round() as i64).abs() <= 1);
@@ -752,4 +757,26 @@ fn reverse_engineering_range_crosses_clip_boundary_without_changing_project() {
         assert_eq!(capture.timeline_time, rate.tick_of(frame));
     }
     assert_eq!(serde_json::to_value(&*d.app().session.project).unwrap(), original);
+}
+
+#[test]
+fn reverse_engineering_new_range_waits_for_confirmation_and_cancel_preserves_progress() {
+    let mut d = Driver::demo();
+    let clip = d.app().session.active_sequence().unwrap().video_tracks[0].items[0].clone();
+    d.app().session.state.selection = vec![clip.id];
+    d.ok("ui.panel.show", json!({"panel":"ReverseEngineering"}));
+    d.frames(3);
+    let original = d.app().ui.panels.reverse_engineering.clone();
+    let project = serde_json::to_value(&*d.app().session.project).unwrap();
+    let response = d.call("ui.menu.invoke", json!({"id":"reverseEngineering.setRange","params":{"startFrame":1,"endFrame":5}}));
+    assert_eq!(response["result"]["confirmationRequired"], true);
+    assert_eq!(d.app().ui.panels.reverse_engineering, original);
+    d.ok("ui.menu.invoke", json!({"id":"reverseEngineering.confirmRangeChange","params":{"accept":false}}));
+    assert_eq!(d.app().ui.panels.reverse_engineering, original);
+    d.ok("ui.menu.invoke", json!({"id":"reverseEngineering.setRange","params":{"startFrame":1,"endFrame":5}}));
+    assert_eq!(d.app().ui.panels.reverse_engineering.start_frame, 1);
+    assert_eq!(d.app().ui.panels.reverse_engineering.end_frame, 5);
+    assert!(d.app().ui.panels.reverse_engineering.motion.is_none());
+    assert!(d.app().ui.panels.reverse_engineering.tracking_queries.is_empty());
+    assert_eq!(serde_json::to_value(&*d.app().session.project).unwrap(), project);
 }

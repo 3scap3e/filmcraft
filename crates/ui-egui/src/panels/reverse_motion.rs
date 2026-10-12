@@ -83,6 +83,7 @@ fn start_job(
     if width == 0 || height == 0 || u64::from(width) * u64::from(height) > 67_108_864 {
         return Err("Invalid or oversized source dimensions".into());
     }
+    let device = app.ui.panels.reverse_engineering.flow_device;
     let rate = app.session.active_sequence().ok_or("No active sequence")?.settings.frame_rate;
     let report = MotionReport {
         schema_version: 5,
@@ -121,7 +122,7 @@ fn start_job(
         .spawn(move || {
             let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| -> Result<MotionReport, String> {
                 let mut report = report;
-                let mut runtime = SeaRaft::start(&worker.cancel)?;
+                let mut runtime = SeaRaft::start_with_device(&worker.cancel, device)?;
                 report.settings["runtime"] = runtime.metadata.clone();
                 let mut previous: Option<(usize, usize, Vec<u8>)> = None;
                 for (index, capture) in report.captures.iter().enumerate() {
@@ -194,6 +195,7 @@ fn start_job(
 }
 
 pub fn poll(app: &mut FilmcraftApp, ctx: &egui::Context) {
+    super::reverse_tracking::poll(app, ctx);
     super::reverse_tools::poll(app, ctx);
     let Some(job) = ctx.data(|d| d.get_temp::<Job>(job_id())) else {
         return;
@@ -233,13 +235,17 @@ pub fn poll(app: &mut FilmcraftApp, ctx: &egui::Context) {
                 app.ui.panels.reverse_engineering.capture = report.captures.get(selected_frame).cloned();
                 app.ui.panels.reverse_engineering.motion = Some(report);
                 app.ui.panels.reverse_engineering.global_motion = None;
+                app.ui.panels.reverse_engineering.local_motion = None;
+                app.ui.panels.reverse_engineering.motion_regions = None;
                 ctx.data_mut(|d| {
                     d.insert_temp(index_id(), selected_frame.saturating_sub(1));
                     d.insert_temp(frame_id(), selected_frame);
                     d.remove::<(usize, usize)>(sample_id());
                 });
                 super::reverse_engineering::reset_decode_timer(ctx);
-                if app.ui.panels.reverse_engineering.active_tool == "globalMotion" && super::reverse_engineering::motion_is_current(app) {
+                if matches!(app.ui.panels.reverse_engineering.active_tool.as_str(), "globalMotion" | "localMotion" | "motionRegions")
+                    && super::reverse_engineering::motion_is_current(app)
+                {
                     if let Err(error) = super::reverse_tools::command(app, ctx, "reverseEngineering.runGlobal", &json!({})) {
                         app.ui.status = error.clone();
                         ctx.data_mut(|d| d.insert_temp(error_id(), error));
@@ -275,6 +281,9 @@ pub fn command(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, params: &V
     }
     if is_running(ctx) {
         return Err("Wait for analysis to finish or cancel it first.".into());
+    }
+    if id == "reverseEngineering.setMotionDisplay" && app.ui.panels.reverse_engineering.active_tool == "localMotion" {
+        return super::reverse_local::set_display(app, params);
     }
     if !super::reverse_engineering::motion_is_current(app) {
         return Err("Range changed. Analyze the selected range before inspecting or editing results.".into());
@@ -384,6 +393,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui) {
         }
         return;
     }
+    super::reverse_tools::device_controls(app, ui, false);
     let current = super::reverse_engineering::motion_is_current(app);
     if !current && app.ui.panels.reverse_engineering.motion.is_some() {
         ui.label("Range changed — analyze again. Previous results are hidden.");
@@ -413,7 +423,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui) {
 }
 
 /// Fixed inspection area: navigation and its preview stay visible together.
-pub fn show_result(app: &mut FilmcraftApp, ui: &mut egui::Ui) {
+pub fn show_result_controls(app: &mut FilmcraftApp, ui: &mut egui::Ui) {
     if !super::reverse_tools::results_visible(app, ui.ctx()) {
         return;
     }
@@ -466,29 +476,6 @@ pub fn show_result(app: &mut FilmcraftApp, ui: &mut egui::Ui) {
         }
         ui.label(format!("of {count}"));
     });
-    egui::ScrollArea::horizontal().id_salt("reverse-motion-results-filmstrip").max_height(76.0).show(ui, |ui| {
-        ui.horizontal(|ui| {
-            for (index, capture) in captures.iter().enumerate() {
-                ui.vertical(|ui| {
-                    ui.set_width(76.0);
-                    let selected = ui.ctx().data(|d| d.get_temp::<usize>(frame_id())).unwrap_or(0) == index;
-                    let response = ui.selectable_label(selected, format!("Frame {}", index + 1));
-                    app.auto.add(&format!("reverseEngineering.resultFrame.{index}"), response.rect, "Select analyzed frame");
-                    if response.clicked() {
-                        invoke(app, ui.ctx(), "reverseEngineering.motionFrame", json!({"frameIndex":index}));
-                    }
-                    let visible = ui.clip_rect().intersects(egui::Rect::from_min_size(ui.cursor().min, egui::vec2(76.0, 44.0)));
-                    if visible {
-                        if super::reverse_engineering::picture(app, ui, capture, 96, &format!("reverseEngineering.resultThumbnail.{index}"), true) {
-                            invoke(app, ui.ctx(), "reverseEngineering.motionFrame", json!({"frameIndex":index}));
-                        }
-                    } else {
-                        ui.allocate_space(egui::vec2(76.0, 44.0));
-                    }
-                });
-            }
-        });
-    });
     let frame = ui.ctx().data(|d| d.get_temp::<usize>(frame_id())).unwrap_or(0).min(count - 1);
     if let Some(capture) = captures.get(frame) {
         let label = format!("Frame {} / {} · {}", frame + 1, count, super::reverse_engineering::timecode(app, capture));
@@ -498,6 +485,10 @@ pub fn show_result(app: &mut FilmcraftApp, ui: &mut egui::Ui) {
             if let Some(pair) = app.ui.panels.reverse_engineering.motion.as_ref().and_then(|r| r.pairs.get(frame - 1)) {
                 if app.ui.panels.reverse_engineering.active_tool == "globalMotion" {
                     super::reverse_tools::caption(app, ui, frame - 1);
+                } else if app.ui.panels.reverse_engineering.active_tool == "motionRegions" {
+                    super::reverse_regions::caption(app, ui, frame - 1);
+                } else if app.ui.panels.reverse_engineering.active_tool == "localMotion" {
+                    super::reverse_local::caption(app, ui, frame - 1);
                 } else {
                     ui.label(format!("Motion: frame {} → {} · {} SEA-RAFT samples", frame, frame + 1, pair.vectors.len()));
                 }
@@ -516,7 +507,22 @@ pub fn show_result(app: &mut FilmcraftApp, ui: &mut egui::Ui) {
                 }
             }
         }
-        super::reverse_engineering::picture(app, ui, capture, 640, "reverseEngineering.frame", false);
+    }
+}
+
+pub fn show_result(app: &mut FilmcraftApp, ui: &mut egui::Ui) {
+    if !super::reverse_tools::results_visible(app, ui.ctx()) {
+        return;
+    }
+    let Some(report) = app.ui.panels.reverse_engineering.motion.as_ref() else {
+        return;
+    };
+    let captures = report.captures.clone();
+    let frame = ui.ctx().data(|d| d.get_temp::<usize>(frame_id())).unwrap_or(0).min(captures.len().saturating_sub(1));
+    if let Some(capture) = captures.get(frame) {
+        super::reverse_engineering::selected_picture(app, ui, capture, 104.0);
+        ui.add_space(8.0);
+        super::reverse_engineering::frame_strip(app, ui, &captures, frame, false);
     }
 }
 
@@ -526,6 +532,20 @@ pub fn overlay(app: &mut FilmcraftApp, ui: &egui::Ui, capture: &ReverseEngineeri
         let frame = ui.ctx().data(|d| d.get_temp::<usize>(frame_id())).unwrap_or(0);
         if frame > 0 {
             super::reverse_tools::overlay(app, ui, frame - 1, rect);
+        }
+        return;
+    }
+    if tool == "motionRegions" {
+        let frame = ui.ctx().data(|d| d.get_temp::<usize>(frame_id())).unwrap_or(0);
+        if frame > 0 {
+            super::reverse_regions::overlay(app, ui, frame - 1, rect);
+        }
+        return;
+    }
+    if tool == "localMotion" {
+        let frame = ui.ctx().data(|d| d.get_temp::<usize>(frame_id())).unwrap_or(0);
+        if frame > 0 {
+            super::reverse_local::overlay(app, ui, frame - 1, rect);
         }
         return;
     }
@@ -590,24 +610,28 @@ pub fn overlay(app: &mut FilmcraftApp, ui: &egui::Ui, capture: &ReverseEngineeri
     }
 }
 
-fn display_controls(app: &mut FilmcraftApp, ui: &mut egui::Ui) {
-    let Some(report) = app.ui.panels.reverse_engineering.motion.as_ref() else {
-        return;
-    };
-    if report.analyzer != "filmcraft-vision/sea-raft-M" {
-        return;
-    }
+pub(super) fn display_controls(app: &mut FilmcraftApp, ui: &mut egui::Ui) {
     let index = ui.ctx().data(|d| d.get_temp::<usize>(index_id())).unwrap_or(0);
-    if index >= report.pairs.len() {
-        return;
-    }
-    let custom = report.display.frame_overrides.contains_key(&index);
-    let mut settings = report.display.effective(index);
+    let local = app.ui.panels.reverse_engineering.active_tool == "localMotion";
+    let displays = if local {
+        let Some(report) = app.ui.panels.reverse_engineering.local_motion.as_ref().filter(|r| index < r.pairs.len()) else {
+            return;
+        };
+        &report.display
+    } else {
+        let Some(report) = app.ui.panels.reverse_engineering.motion.as_ref().filter(|r| r.analyzer == "filmcraft-vision/sea-raft-M" && index < r.pairs.len())
+        else {
+            return;
+        };
+        &report.display
+    };
+    let custom = displays.frame_overrides.contains_key(&index);
+    let mut settings = displays.effective(index);
     let before = settings;
     ui.separator();
-    ui.label(if custom { "SEA-RAFT overlay: selected frame has custom settings" } else { "SEA-RAFT overlay: selected frame uses shared settings" });
-    let response = ui.checkbox(&mut settings.enabled, "Show SEA-RAFT flow");
-    app.auto.add("reverseEngineering.motionDisplay.enabled", response.rect, "Show SEA-RAFT flow");
+    ui.label(format!("{} overlay · {} settings", if local { "Comparison" } else { "SEA-RAFT" }, if custom { "this frame’s" } else { "shared" }));
+    let response = ui.checkbox(&mut settings.enabled, if local { "Show comparison arrows" } else { "Show SEA-RAFT flow" });
+    app.auto.add("reverseEngineering.motionDisplay.enabled", response.rect, if local { "Show comparison arrows" } else { "Show SEA-RAFT flow" });
     ui.horizontal_wrapped(|ui| {
         ui.label("Cutoff (analysis px)");
         let response = ui.add(egui::DragValue::new(&mut settings.cutoff_pixels).range(0.0..=100.0).speed(0.01));

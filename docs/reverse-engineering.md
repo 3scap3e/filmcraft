@@ -94,3 +94,40 @@ Schema version 5 adds an `audit` object. Successful completion increments the re
 ## R5 tool workflow
 
 The range selector now leads to a tool menu instead of opening optical-flow controls directly. See [R5 tool menu, saving, exports, and global image motion](reverse-engineering-r5.md). SEA-RAFT and global motion are available; the five later layers are disabled.
+
+R6 adds [local residual motion](reverse-engineering-r6.md) with independent display settings and saved/exported results.
+
+[Motion regions](reverse-engineering-motion-regions.md) groups neighboring residual samples with adjustable thresholds and per-frame settings.
+
+[Point tracking with BootsTAPIR](reverse-engineering-point-tracking.md) adds optional manual/grid query selection and trajectories from an independent model.
+
+
+## Changing the analysis range
+
+Dragging previews a new range without committing it. On release, or when entering new timestamps
+or using a playhead boundary, a confirmation asks whether to start again. Cancel/Escape retains
+the old range and all progress. Accept removes previous-range saved snapshots from the analysis
+store, then clears working results, frame captures and tracking queries for every tool, commits
+the new range and returns to the tool menu. Other saved ranges and exported JSON files are retained.
+A failed store write keeps the old range and results. Tool borders now reflect the current range.
+Confirmation does not start inference; choose the next tool after setting the range.
+
+## Model execution choices
+
+SEA-RAFT and BootsTAPIR have separate **Auto / CPU / GPU** choices. The selected preference applies
+to the next model run, not existing results. It is sent through that subprocess’s environment;
+the actual device and requested preference are recorded in runtime metadata. Forced GPU reports
+an error when its backend is unavailable rather than silently using CPU. Auto uses an available
+supported GPU or CPU. SEA-RAFT supports MPS on this Mac. BootsTAPIR’s Apple GPU choice is disabled
+because its predictions failed validation; Auto uses CPU here. Its GPU option requires CUDA,
+which remains unbenchmarked on another machine. Rust-only global fitting and grouping do not
+need model execution controls.
+
+## Two-column inspection layout
+
+All tools share a full-height left column for controls, navigation, timestamps and measurements,
+and a right column for the selected frame with its horizontal thumbnail strip underneath. Text
+and control groups wrap within their columns; the selected frame scales to leave room for the
+strip. The left column scrolls independently only when the panel is too short to contain its
+controls. The image is not placed below that scroll area. Thumbnails are virtualized, including
+for full-range point tracking, so offscreen frames do not create decoding requests or widgets.
