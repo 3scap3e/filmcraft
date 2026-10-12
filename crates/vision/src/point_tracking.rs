@@ -91,9 +91,6 @@ pub fn infer_with_device(
     use std::process::{Command, Stdio};
     use std::sync::mpsc;
     use std::time::{Duration, Instant};
-    if device == crate::execution::Device::Gpu && cfg!(target_os = "macos") {
-        return Err("BootsTAPIR Apple GPU predictions failed validation. Choose Auto or CPU.".into());
-    }
     validate_queries(&queries, frames.len())?;
     if frames.len() > MAX_FRAMES {
         return Err("Internal tracking chunk exceeds 120 frames".into());

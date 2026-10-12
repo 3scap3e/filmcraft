@@ -116,7 +116,9 @@ pub fn command(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, params: &V
     }
     if matches!(
         id,
-        "reverseEngineering.runTracking"
+        "reverseEngineering.labelUngroupedPoints"
+            | "reverseEngineering.setTrackingGroup"
+            | "reverseEngineering.runTracking"
             | "reverseEngineering.cancelTracking"
             | "reverseEngineering.setTrackingMode"
             | "reverseEngineering.addTrackingPoint"
@@ -655,14 +657,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
             }
             super::reverse_tools::show(app, ui);
         }
-        if inspect_motion {
-            ui.separator();
-            if app.ui.panels.reverse_engineering.active_tool == "trajectories" {
-                super::reverse_tracking::show_result_controls(app, ui);
-            } else {
-                super::reverse_motion::show_result_controls(app, ui);
-            }
-        } else if !app.ui.panels.reverse_engineering.range_mode
+        if !app.ui.panels.reverse_engineering.range_mode
             && let Some(capture) = app.ui.panels.reverse_engineering.capture.as_ref()
         {
             ui.label(&capture.name);
@@ -675,6 +670,15 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     result_ui.set_clip_rect(results.intersect(ui.clip_rect()));
     result_ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Wrap);
     if inspect_motion {
+        if app.ui.panels.reverse_engineering.active_tool == "motionOverTime" {
+            super::reverse_time::graph(app, &mut result_ui);
+        }
+        if app.ui.panels.reverse_engineering.active_tool == "trajectories" {
+            super::reverse_tracking::show_result_controls(app, &mut result_ui);
+        } else {
+            super::reverse_motion::show_result_controls(app, &mut result_ui);
+        }
+        result_ui.separator();
         if app.ui.panels.reverse_engineering.active_tool == "trajectories" {
             super::reverse_tracking::show_result(app, &mut result_ui);
         } else {

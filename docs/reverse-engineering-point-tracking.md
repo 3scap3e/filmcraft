@@ -52,7 +52,7 @@ Configuration overrides:
   been benchmarked here.
 
 The Apple MPS attempt failed the model's reference-point sanity check even with its unsupported
-3D grid sampler routed to CPU. It is disabled for this implementation. CPU execution produced
+3D grid sampler routed to CPU. Auto therefore uses CPU on Apple devices. Explicit GPU selection attempts MPS and reports runtime errors without silently retrying on CPU. CPU execution produced
 visible downward tracks on the sun in the short fixture test; exact accuracy still requires
 inspection. No alternative tracking algorithm is silently substituted.
 
@@ -112,3 +112,12 @@ The real-model boundary smoke test processed all 31 frames in two 16-frame windo
 both point identities. Predicted downward displacement was 2.345/2.160 pixels versus 2.703
 expected. This validates execution/stitching, not precision; chunk continuation can accumulate
 error. The editor UI remains for manual testing.
+
+### User point groups
+
+Choose a group name before clicking manual points. Group chips select the group for subsequent
+points; color is derived consistently from the label. “Assign unlabelled points to this group”
+labels existing points without rerunning inference. Labels are user annotations, not model-detected
+objects or segmentation. Saved/exported `pointLabels` maps by index to `queries` and
+`inference.tracks`; older reports without labels display as Unlabelled. Saving preserves query
+points and the working report. New ranges and cleared/reseeded points clear the label assignments.

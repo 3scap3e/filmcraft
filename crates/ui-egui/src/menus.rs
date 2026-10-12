@@ -30,6 +30,8 @@ pub const UI_COMMANDS: &[UiCommand] = &[
     uic!("reverseEngineering.setLocalView", "Compare Raw and Residual Motion", [], None),
     uic!("reverseEngineering.setExecutionDevice", "Set Analysis Execution Device", [], None),
     uic!("reverseEngineering.confirmRangeChange", "Confirm or Cancel New Analysis Range", [], None),
+    uic!("reverseEngineering.labelUngroupedPoints", "Label Ungrouped Tracking Points", [], None),
+    uic!("reverseEngineering.setTrackingGroup", "Set Tracking Point Group", [], None),
     uic!("reverseEngineering.runTracking", "Track Query Points", [], None),
     uic!("reverseEngineering.cancelTracking", "Cancel Point Tracking", [], None),
     uic!("reverseEngineering.setTrackingMode", "Set Point Selection Mode", [], None),

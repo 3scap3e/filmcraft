@@ -18,6 +18,8 @@ pub struct TrackingReport {
     pub project_revision: u64,
     pub selection_mode: String,
     pub queries: Vec<Query>,
+    #[serde(default)]
+    pub point_labels: Vec<String>,
     pub source_size: [u32; 2],
     pub inference: point_tracking_chunks::Result,
     pub limitations: Vec<String>,
@@ -56,6 +58,7 @@ pub(super) fn prepare(app: &mut FilmcraftApp) -> Result<(), String> {
     if state.tracking_captures != captures {
         state.tracking_captures = captures;
         state.tracking_queries.clear();
+        state.tracking_labels.clear();
         state.tracking_frame = 0;
     }
     Ok(())
@@ -96,6 +99,29 @@ pub(super) fn command(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, par
         return Err("Cancel the current analysis before changing point tracking".into());
     }
     prepare(app)?;
+    if id == "reverseEngineering.setTrackingGroup" {
+        let label = params.get("label").and_then(Value::as_str).ok_or("Supply a group name")?.trim();
+        if label.is_empty() || label.chars().count() > 80 {
+            return Err("Group names must contain 1–80 characters".into());
+        }
+        app.ui.panels.reverse_engineering.tracking_group = label.into();
+        return Ok(json!({"label":label}));
+    }
+    if id == "reverseEngineering.labelUngroupedPoints" {
+        let state = &mut app.ui.panels.reverse_engineering;
+        state.tracking_labels.resize(state.tracking_queries.len(), "Unlabelled".into());
+        for label in &mut state.tracking_labels {
+            if label == "Unlabelled" {
+                *label = state.tracking_group.clone();
+            }
+        }
+        if let Some(report) = state.tracking_report.as_mut() {
+            if report.queries == state.tracking_queries {
+                report.point_labels = state.tracking_labels.clone();
+            }
+        }
+        return Ok(json!({"labelled":true}));
+    }
     if id == "reverseEngineering.trackingFrame" {
         let index = params.get("frameIndex").and_then(Value::as_u64).and_then(|v| usize::try_from(v).ok()).ok_or("Supply frame index")?;
         let capture = app.ui.panels.reverse_engineering.tracking_captures.get(index).ok_or("Frame outside tracking range")?.clone();
@@ -121,12 +147,14 @@ pub(super) fn command(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, par
         let s = &mut app.ui.panels.reverse_engineering;
         s.tracking_grid_side = side;
         s.tracking_grid = mode == "grid";
+        s.tracking_labels.clear();
         s.tracking_queries = if s.tracking_grid { point_tracking::grid(s.tracking_frame, side, s.tracking_captures.len())? } else { Vec::new() };
         ctx.request_repaint();
         return Ok(json!({"mode":mode}));
     }
     if id == "reverseEngineering.clearTrackingPoints" {
         app.ui.panels.reverse_engineering.tracking_queries.clear();
+        app.ui.panels.reverse_engineering.tracking_labels.clear();
         return Ok(json!({"cleared":true}));
     }
     if id == "reverseEngineering.addTrackingPoint" {
@@ -137,6 +165,8 @@ pub(super) fn command(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, par
         }
         let q = Query { frame_index: s.tracking_frame, position };
         point_tracking::validate_queries(std::slice::from_ref(&q), s.tracking_captures.len())?;
+        s.tracking_labels.resize(s.tracking_queries.len(), "Unlabelled".into());
+        s.tracking_labels.push(s.tracking_group.clone());
         s.tracking_queries.push(q);
         ctx.request_repaint();
         return Ok(json!({"points":s.tracking_queries.len()}));
@@ -148,6 +178,8 @@ pub(super) fn command(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, par
     point_tracking::validate_queries(&s.tracking_queries, s.tracking_captures.len())?;
     let captures = s.tracking_captures.clone();
     let queries = s.tracking_queries.clone();
+    let mut labels = s.tracking_labels.clone();
+    labels.resize(queries.len(), "Unlabelled".into());
     let mode = if s.tracking_grid { "grid" } else { "manual" };
     let first = captures.first().ok_or("No tracking frames")?;
     let size = app.session.project.source_size(first.item).ok_or("No video dimensions")?;
@@ -174,7 +206,7 @@ pub(super) fn command(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, par
                 worker.progress.store(normalized,Ordering::Relaxed);repaint.request_repaint();
             })?;
             Ok(TrackingReport {schema_version:2,analyzer:"filmcraft-vision/bootstapir-chunked-v2".into(),captures,project_revision:revision,
-                selection_mode:mode.into(),queries,source_size:[size.0,size.1],inference,
+                selection_mode:mode.into(),queries,point_labels:labels,source_size:[size.0,size.1],inference,
                 limitations:vec!["Tracks supplied points through rendered timeline frames; grid selection does not identify objects.".into(),
                     "Uses the official BootsTAPIR checkpoint at 256x256 inference resolution; coordinates are normalized XY, queries include a range-relative frame index.".into(),
                     "Visibility is the model's score and threshold decision, not calibrated confidence. Occluded points are not drawn as visible tracks.".into(),
@@ -211,6 +243,37 @@ pub(super) fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui) {
         return;
     }
     super::reverse_tools::device_controls(app, ui, true);
+    let mut group = app.ui.panels.reverse_engineering.tracking_group.clone();
+    ui.horizontal_wrapped(|ui| {
+        ui.label("Point group");
+        let response = ui.add(egui::TextEdit::singleline(&mut group).char_limit(80).desired_width(120.0));
+        app.auto.add("reverseEngineering.tracking.groupName", response.rect, "Group for new points");
+        if response.changed() && !group.trim().is_empty() {
+            invoke(app, ui.ctx(), "reverseEngineering.setTrackingGroup", json!({"label":group}));
+        }
+    });
+    if !app.ui.panels.reverse_engineering.tracking_queries.is_empty() {
+        let response = ui.button("Assign unlabelled points to this group");
+        app.auto.add("reverseEngineering.labelUngroupedPoints", response.rect, "Label existing ungrouped points without running tracking again");
+        if response.clicked() {
+            invoke(app, ui.ctx(), "reverseEngineering.labelUngroupedPoints", json!({}));
+        }
+    }
+    let mut labels = app.ui.panels.reverse_engineering.tracking_labels.clone();
+    labels.sort();
+    labels.dedup();
+    ui.horizontal_wrapped(|ui| {
+        for label in labels {
+            let count = app.ui.panels.reverse_engineering.tracking_labels.iter().filter(|l| **l == label).count();
+            let response = ui.selectable_label(
+                app.ui.panels.reverse_engineering.tracking_group == label,
+                egui::RichText::new(format!("{label} ({count})")).color(group_color(&label)),
+            );
+            if response.clicked() {
+                invoke(app, ui.ctx(), "reverseEngineering.setTrackingGroup", json!({"label":label}));
+            }
+        }
+    });
     ui.horizontal_wrapped(|ui| {
         for (grid, label, mode) in [(false, "Manual points", "manual"), (true, "Automatic grid", "grid")] {
             let response = ui.selectable_label(app.ui.panels.reverse_engineering.tracking_grid == grid, label);
@@ -305,7 +368,8 @@ pub(super) fn overlay(app: &mut FilmcraftApp, ui: &egui::Ui, rect: egui::Rect) {
     if current(app) {
         if let Some(report) = app.ui.panels.reverse_engineering.tracking_report.as_ref() {
             for (i, track) in report.inference.tracks.iter().take(64).enumerate() {
-                let color = if i % 2 == 0 { egui::Color32::from_rgb(100, 220, 235) } else { egui::Color32::from_rgb(245, 210, 100) };
+                let label = report.point_labels.get(i).map(String::as_str).unwrap_or("Unlabelled");
+                let color = group_color(label);
                 let start = frame.saturating_sub(30);
                 let mut previous = None;
                 for t in start..=frame {
@@ -340,7 +404,8 @@ pub(super) fn overlay(app: &mut FilmcraftApp, ui: &egui::Ui, rect: egui::Rect) {
                     let reference =
                         track.observations.get(track.query.frame_index).and_then(Option::as_ref).map(|r| r.position).unwrap_or(track.query.position);
                     response.on_hover_text(format!(
-                        "Point {} · normalized x {:.5}, y {:.5}\nFrom reference: Δx {:.3}px · Δy {:.3}px at {}×{}\nModel visibility score {:.4}",
+                        "{} · Point {} · normalized x {:.5}, y {:.5}\nFrom reference: Δx {:.3}px · Δy {:.3}px at {}×{}\nModel visibility score {:.4}",
+                        label,
                         i + 1,
                         o.position[0],
                         o.position[1],
@@ -354,12 +419,13 @@ pub(super) fn overlay(app: &mut FilmcraftApp, ui: &egui::Ui, rect: egui::Rect) {
             }
         }
     } else {
-        for q in app.ui.panels.reverse_engineering.tracking_queries.iter().take(64).filter(|q| q.frame_index == frame) {
-            painter.circle_stroke(position(q.position), 4.0, egui::Stroke::new(1.5, egui::Color32::YELLOW));
+        for (i, q) in app.ui.panels.reverse_engineering.tracking_queries.iter().take(64).enumerate().filter(|(_, q)| q.frame_index == frame) {
+            let label = app.ui.panels.reverse_engineering.tracking_labels.get(i).map(String::as_str).unwrap_or("Unlabelled");
+            painter.circle_stroke(position(q.position), 4.0, egui::Stroke::new(1.5, group_color(label)));
         }
     }
     if !app.ui.panels.reverse_engineering.tracking_grid && !is_running(ui.ctx()) {
-        let response = ui.interact(rect, egui::Id::new("reverse-tracking-point-pick"), egui::Sense::click());
+        let response = ui.interact(rect.intersect(ui.clip_rect()), egui::Id::new("reverse-tracking-point-pick"), egui::Sense::click());
         if response.clicked()
             && let Some(p) = response.interact_pointer_pos()
         {
@@ -368,4 +434,17 @@ pub(super) fn overlay(app: &mut FilmcraftApp, ui: &egui::Ui, rect: egui::Rect) {
             invoke(app, ui.ctx(), "reverseEngineering.addTrackingPoint", json!({"position":[x,y]}));
         }
     }
+}
+
+fn group_color(label: &str) -> egui::Color32 {
+    let hash = label.bytes().fold(2166136261u32, |h, b| (h ^ u32::from(b)).wrapping_mul(16777619));
+    let palette = [
+        egui::Color32::from_rgb(100, 220, 235),
+        egui::Color32::from_rgb(245, 210, 100),
+        egui::Color32::from_rgb(235, 120, 170),
+        egui::Color32::from_rgb(140, 230, 130),
+        egui::Color32::from_rgb(180, 150, 245),
+        egui::Color32::from_rgb(245, 160, 100),
+    ];
+    palette[hash as usize % palette.len()]
 }

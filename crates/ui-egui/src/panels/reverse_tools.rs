@@ -30,6 +30,7 @@ pub enum SavedResult {
     LocalMotion(super::reverse_local::LocalReport),
     MotionRegions(super::reverse_regions::RegionReport),
     PointTracking(super::reverse_tracking::TrackingReport),
+    MotionOverTime(super::reverse_time::TimeReport),
 }
 impl SavedResult {
     fn tool(&self) -> &str {
@@ -39,6 +40,7 @@ impl SavedResult {
             Self::LocalMotion(_) => "localMotion",
             Self::MotionRegions(_) => "motionRegions",
             Self::PointTracking(_) => "trajectories",
+            Self::MotionOverTime(_) => "motionOverTime",
         }
     }
     fn captures(&self) -> &[ReverseEngineeringCapture] {
@@ -48,6 +50,7 @@ impl SavedResult {
             Self::LocalMotion(r) => &r.captures,
             Self::MotionRegions(r) => &r.captures,
             Self::PointTracking(r) => &r.captures,
+            Self::MotionOverTime(r) => &r.captures,
         }
     }
 }
@@ -94,6 +97,7 @@ pub(super) fn results_visible(app: &FilmcraftApp, ctx: &egui::Context) -> bool {
         "globalMotion" => current_global(app),
         "localMotion" => super::reverse_local::current(app),
         "motionRegions" => super::reverse_regions::current(app),
+        "motionOverTime" => super::reverse_time::current(app),
         "trajectories" => super::reverse_tracking::current(app),
         _ => false,
     }
@@ -285,9 +289,6 @@ pub fn command(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, params: &V
         let tool = params.get("tool").and_then(Value::as_str).ok_or("Supply model tool")?;
         let device: filmcraft_vision::execution::Device =
             serde_json::from_value(params.get("device").cloned().ok_or("Supply auto, cpu or gpu")?).map_err(|e| e.to_string())?;
-        if tool == "trajectories" && device == filmcraft_vision::execution::Device::Gpu && cfg!(target_os = "macos") {
-            return Err("BootsTAPIR Apple GPU predictions failed validation; use CPU or Auto".into());
-        }
         match tool {
             "opticalFlow" => app.ui.panels.reverse_engineering.flow_device = device,
             "trajectories" => app.ui.panels.reverse_engineering.tracking_device = device,
@@ -298,7 +299,7 @@ pub fn command(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, params: &V
 
     if id == "reverseEngineering.chooseTool" {
         let tool = params.get("tool").and_then(Value::as_str).ok_or("Supply a tool id")?;
-        if !matches!(tool, "menu" | "opticalFlow" | "globalMotion" | "localMotion" | "motionRegions" | "trajectories") {
+        if !matches!(tool, "menu" | "opticalFlow" | "globalMotion" | "localMotion" | "motionRegions" | "motionOverTime" | "trajectories") {
             return Err("This analytical layer is not implemented yet".into());
         }
         if tool != "menu" && super::reverse_engineering::selected_source(app).is_none() {
@@ -322,6 +323,7 @@ pub fn command(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, params: &V
                 if let Some(report) = saved {
                     let state = &mut app.ui.panels.reverse_engineering;
                     state.tracking_queries = report.queries.clone();
+                    state.tracking_labels = report.point_labels.clone();
                     state.tracking_grid = report.selection_mode == "grid";
                     state.tracking_frame = report.queries.first().map(|q| q.frame_index).unwrap_or(0);
                     state.tracking_report = Some(report);
@@ -368,7 +370,9 @@ pub fn command(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, params: &V
         }
         app.ui.panels.reverse_engineering.active_tool = tool.into();
         ctx.request_repaint();
-        if tool == "opticalFlow" || (matches!(tool, "globalMotion" | "localMotion" | "motionRegions") && !super::reverse_engineering::motion_is_current(app)) {
+        if tool == "opticalFlow"
+            || (matches!(tool, "globalMotion" | "localMotion" | "motionRegions" | "motionOverTime") && !super::reverse_engineering::motion_is_current(app))
+        {
             super::reverse_engineering::command(app, ctx, "reverseEngineering.analyzeMotion", &json!({}))?;
         }
         if matches!(tool, "globalMotion" | "localMotion" | "motionRegions") && super::reverse_engineering::motion_is_current(app) && !current_global(app) {
@@ -436,6 +440,12 @@ pub fn command(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, params: &V
             .iter()
             .filter(|r| super::reverse_engineering::captures_are_current(app, r.captures()))
             .filter(|r| match r {
+                SavedResult::MotionOverTime(report) => !saved.iter().any(|s| match s {
+                    SavedResult::OpticalFlow(flow) if flow.captures == report.captures => {
+                        flow.audit.revision != report.source_motion_revision || source_time(flow) != report.source_completed_at_unix_ms
+                    }
+                    _ => false,
+                }),
                 SavedResult::GlobalMotion(global) => !saved.iter().any(|s| match s {
                     SavedResult::OpticalFlow(flow) if flow.captures == global.captures => {
                         flow.audit.revision != global.source_motion_revision || source_time(flow) != global.source_completed_at_unix_ms
@@ -477,7 +487,7 @@ pub fn command(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, params: &V
         return export(app, params, &json!({"schemaVersion":1,"scope":"selectedVideoRange","results":results}));
     }
     let tool = app.ui.panels.reverse_engineering.active_tool.clone();
-    if !matches!(tool.as_str(), "opticalFlow" | "globalMotion" | "localMotion" | "motionRegions" | "trajectories") {
+    if !matches!(tool.as_str(), "opticalFlow" | "globalMotion" | "localMotion" | "motionRegions" | "motionOverTime" | "trajectories") {
         return Err("Choose an implemented tool first".into());
     }
     if id == "reverseEngineering.deleteToolResult" {
@@ -505,10 +515,17 @@ pub fn command(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, params: &V
             }
             "motionRegions" => app.ui.panels.reverse_engineering.motion_regions = None,
             "trajectories" => app.ui.panels.reverse_engineering.tracking_report = None,
+            "motionOverTime" => {
+                app.ui.panels.reverse_engineering.motion_time = None;
+                app.ui.panels.reverse_engineering.active_tool = "menu".into();
+            }
             _ => return Err("Choose an implemented tool".into()),
         };
         app.ui.status = "Deleted this tool result for the selected range".into();
         return Ok(json!({"deleted":true}));
+    }
+    if tool == "motionOverTime" && super::reverse_engineering::motion_is_current(app) && !super::reverse_time::current(app) {
+        super::reverse_time::build(app)?;
     }
     let result = match tool.as_str() {
         "opticalFlow" if super::reverse_engineering::motion_is_current(app) => {
@@ -520,6 +537,9 @@ pub fn command(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, params: &V
         }
         "motionRegions" if super::reverse_regions::current(app) => {
             SavedResult::MotionRegions(app.ui.panels.reverse_engineering.motion_regions.clone().ok_or("Analyze first")?)
+        }
+        "motionOverTime" if super::reverse_time::current(app) => {
+            SavedResult::MotionOverTime(app.ui.panels.reverse_engineering.motion_time.clone().ok_or("Summarize motion first")?)
         }
         "trajectories" if super::reverse_tracking::current(app) => {
             SavedResult::PointTracking(app.ui.panels.reverse_engineering.tracking_report.clone().ok_or("Track points first")?)
@@ -544,6 +564,14 @@ pub fn command(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, params: &V
             saved.push(result);
         }
         persist(&path, &saved)?;
+        if let Some(SavedResult::PointTracking(report)) =
+            saved.iter().find(|r| r.tool() == tool && r.captures() == app.ui.panels.reverse_engineering.tracking_captures)
+        {
+            let state = &mut app.ui.panels.reverse_engineering;
+            state.tracking_queries = report.queries.clone();
+            state.tracking_labels = report.point_labels.clone();
+            state.tracking_report = Some(report.clone());
+        }
         app.ui.panels.reverse_engineering.saved_results = saved;
         app.ui.status = format!("Tool result saved to {}", path.display());
         return Ok(json!({"saved":true,"path":path}));
@@ -572,6 +600,7 @@ fn status(app: &FilmcraftApp, tool: &str) -> String {
         "globalMotion" => current_global(app),
         "localMotion" => super::reverse_local::current(app),
         "motionRegions" => super::reverse_regions::current(app),
+        "motionOverTime" => super::reverse_time::current(app),
         "trajectories" => super::reverse_tracking::current(app),
         _ => false,
     };
@@ -582,6 +611,7 @@ fn status(app: &FilmcraftApp, tool: &str) -> String {
         (Some(SavedResult::GlobalMotion(saved)), "globalMotion") => state.global_motion.as_ref() == Some(saved),
         (Some(SavedResult::LocalMotion(saved)), "localMotion") => state.local_motion.as_ref() == Some(saved),
         (Some(SavedResult::MotionRegions(saved)), "motionRegions") => state.motion_regions.as_ref() == Some(saved),
+        (Some(SavedResult::MotionOverTime(saved)), "motionOverTime") => state.motion_time.as_ref() == Some(saved),
         (Some(SavedResult::PointTracking(saved)), "trajectories") => state.tracking_report.as_ref() == Some(saved),
         _ => false,
     };
@@ -614,7 +644,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui) {
             ("globalMotion", "Global image motion", true),
             ("localMotion", "Local motion", true),
             ("motionRegions", "Motion regions", true),
-            ("motionOverTime", "Motion over time", false),
+            ("motionOverTime", "Motion over time", true),
             ("trajectories", "Point tracking", true),
             ("discontinuities", "Motion discontinuities", false),
         ];
@@ -631,6 +661,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui) {
                     "globalMotion" => current_global(app),
                     "localMotion" => super::reverse_local::current(app),
                     "motionRegions" => super::reverse_regions::current(app),
+                    "motionOverTime" => super::reverse_time::current(app),
                     "trajectories" => super::reverse_tracking::current(app),
                     _ => false,
                 };
@@ -777,6 +808,9 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui) {
             }
         }
     }
+    if tool == "motionOverTime" {
+        super::reverse_time::show(app, ui);
+    }
     if tool == "motionRegions" {
         super::reverse_regions::show(app, ui);
     }
@@ -866,8 +900,10 @@ pub(super) fn clear_range_results(app: &mut FilmcraftApp) -> Result<(), String> 
     s.global_motion = None;
     s.local_motion = None;
     s.motion_regions = None;
+    s.motion_time = None;
     s.tracking_report = None;
     s.tracking_queries.clear();
+    s.tracking_labels.clear();
     s.tracking_captures.clear();
     s.tracking_frame = 0;
     Ok(())
@@ -878,20 +914,16 @@ pub(super) fn device_controls(app: &mut FilmcraftApp, ui: &mut egui::Ui, trackin
     ui.horizontal_wrapped(|ui| {
         ui.label("Execution");
         for (device, label) in [(Device::Auto, "Auto"), (Device::Cpu, "CPU"), (Device::Gpu, "GPU")] {
-            let enabled = !(tracking && device == Device::Gpu && cfg!(target_os = "macos"));
-            let response = ui.add_enabled(enabled, egui::Button::new(label).selected(current == device));
+            let response = ui.add(egui::Button::new(label).selected(current == device));
             let tool = if tracking { "trajectories" } else { "opticalFlow" };
             app.auto.add(&format!("reverseEngineering.device.{tool}.{}", device.as_str()), response.rect, label);
             if response.clicked() {
                 invoke(app, ui.ctx(), "reverseEngineering.setExecutionDevice", json!({"tool":tool,"device":device}));
             }
-            if !enabled {
-                response.on_disabled_hover_text("BootsTAPIR Apple GPU predictions failed validation. CPU is supported; CUDA can be tested on another machine.");
-            }
         }
     });
     if tracking && cfg!(target_os = "macos") {
-        ui.label("Apple GPU unavailable for this tracker: predictions failed validation. Auto uses CPU.");
+        ui.label("Auto uses CPU on Apple devices. GPU tries MPS; runtime errors will be shown.");
     }
     ui.label("Execution changes apply to the next model run.");
 }

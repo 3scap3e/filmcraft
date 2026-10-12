@@ -111,3 +111,5 @@ mod replacement_tests {
         assert_eq!(original[2], before[2]);
     }
 }
+
+pub mod motion_time;

@@ -528,6 +528,9 @@ pub fn show_result(app: &mut FilmcraftApp, ui: &mut egui::Ui) {
 
 pub fn overlay(app: &mut FilmcraftApp, ui: &egui::Ui, capture: &ReverseEngineeringCapture, rect: egui::Rect) {
     let tool = app.ui.panels.reverse_engineering.active_tool.as_str();
+    if tool == "motionOverTime" {
+        return;
+    }
     if tool == "globalMotion" {
         let frame = ui.ctx().data(|d| d.get_temp::<usize>(frame_id())).unwrap_or(0);
         if frame > 0 {
