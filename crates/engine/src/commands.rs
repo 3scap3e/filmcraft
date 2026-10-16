@@ -8,8 +8,8 @@ use filmcraft_edit::{Edge, TrimMode};
 use filmcraft_media::Generator;
 use filmcraft_media::generators::GeneratorSource;
 use filmcraft_project::{
-    ClipId, ItemId, ItemKind, Label, Marker, MarkerId, MarkerKind, MediaClip, MediaRef, ParamValue, Project, SequenceSettings, Track, TrackId, TrackKind,
-    Transition, TransitionId, resolve_auto_points,
+    ClipId, ItemId, ItemKind, Label, Marker, MarkerId, MarkerKind, MediaClip, MediaRef, ParamValue, Project, SequenceSettings, Track, TrackId, TrackItem,
+    TrackKind, Transition, TransitionId, resolve_auto_points,
 };
 use filmcraft_time::{FrameRate, TICKS_PER_SECOND, Tick, TimeRange, parse_timecode};
 use serde_json::{Value, json};
@@ -2683,6 +2683,26 @@ fn build() -> Vec<CommandSpec> {
                 Ok(json!({"keyframes": keyframes}))
             }
         ),
+        cmd!(
+            "effects.setKeyframes",
+            "Set Keyframes",
+            [],
+            None,
+            r##"{"clip":id,"effect":"motion"|index,"params":{"<param>":[{"time":ticks (timeline),"value":num|[x,y]|"#rrggbb"|bool},...],...},"replace":bool? (default true: the parameter's existing keyframes inside the written span are removed first),"interpolation":"linear|hold"?,"set":{"<param>":value}? (static values written in the same step)} — every keyframe of every parameter in one undo step; keyframe times must lie inside the clip"##,
+            has_seq,
+            |s, p| {
+                let c = clip_p(p, "clip").ok_or_else(|| bad("effects.setKeyframes", "need `clip`"))?;
+                let request = keyframe_request(p, "params", "effects.setKeyframes")?;
+                if request.params.is_empty() && p.get("params").is_none() {
+                    return Err(bad("effects.setKeyframes", "need `params`"));
+                }
+                let written = s.edit_sequence("Set Keyframes", |q, _, _| {
+                    let (_, it) = q.find_item_mut(c).ok_or(filmcraft_edit::EditError::NoItem(c))?;
+                    write_keyframes(it, &request, "effects.setKeyframes")
+                })?;
+                Ok(json!({"keyframes": written}))
+            }
+        ),
         cmd!("effects.toggleAnimation", "Toggle Animation", [], None, r#"{"clip":id,"effect":str|index,"param":str,"mask":n?}"#, has_seq, |s, p| {
             let c = clip_p(p, "clip").ok_or_else(|| bad("effects.toggleAnimation", "need `clip`"))?;
             let pid = str_p(p, "param").ok_or_else(|| bad("effects.toggleAnimation", "need `param`"))?.to_string();
@@ -2953,6 +2973,7 @@ fn build() -> Vec<CommandSpec> {
     v.extend(crate::project_panel::commands());
     v.extend(crate::media_browser::commands());
     v.extend(crate::paste_media::commands());
+    v.extend(crate::components::commands());
     // Edit ▸ Label ▸ <colour>, Paste Attributes, subclips, Video / Audio Options, Replace With Clip…
     // and their menu order
     crate::clip_ops::apply_layout(&mut v);
@@ -2984,6 +3005,128 @@ fn reset_params(e: &mut filmcraft_project::EffectInstance, only: Option<&str>, f
         }
     }
     any
+}
+
+/// A batch of keyframes for one effect: `{"<param>":[{"time":ticks,"value":…},…]}` under `key`,
+/// static values under `set`, `replace` (default true) and `interpolation` (linear|hold).
+pub(crate) struct KeyframeRequest {
+    pub effect: Value,
+    pub params: serde_json::Map<String, Value>,
+    pub statics: serde_json::Map<String, Value>,
+    pub replace: bool,
+    pub hold: bool,
+}
+
+pub(crate) fn keyframe_request(p: &Value, key: &str, cmd: &str) -> Result<KeyframeRequest> {
+    let effect = p.get("effect").cloned().unwrap_or(json!("motion"));
+    let params = match p.get(key) {
+        None | Some(Value::Null) => serde_json::Map::new(),
+        Some(v) => v.as_object().cloned().ok_or_else(|| bad(cmd, format!("`{key}` must be an object of parameter keyframe lists")))?,
+    };
+    let statics = p.get("set").and_then(Value::as_object).cloned().unwrap_or_default();
+    let replace = bool_p(p, "replace").unwrap_or(true);
+    let hold = match str_p(p, "interpolation").unwrap_or("linear").to_ascii_lowercase().as_str() {
+        "linear" => false,
+        "hold" => true,
+        _ => return Err(bad(cmd, "`interpolation` must be linear or hold")),
+    };
+    let total: usize = params.values().map(|v| v.as_array().map_or(0, Vec::len)).sum();
+    if total > 400_000 {
+        return Err(bad(cmd, "at most 400000 keyframes per call"));
+    }
+    Ok(KeyframeRequest { effect, params, statics, replace, hold })
+}
+
+/// Write every keyframe and static value of `request` on `it`; keyframe times are timeline ticks
+/// inside the clip and are stored at the clip's media time. Nothing is written when any entry is
+/// refused.
+pub(crate) fn write_keyframes(it: &mut TrackItem, request: &KeyframeRequest, cmd: &str) -> Result<usize> {
+    let (start, end) = (it.start, it.end());
+    let mut converted: Vec<(String, Vec<(Tick, Value)>)> = Vec::new();
+    for (pid, list) in &request.params {
+        let list = list.as_array().ok_or_else(|| bad(cmd, format!("`{pid}` must be a list of keyframes")))?;
+        let mut keys = Vec::new();
+        keys.try_reserve_exact(list.len()).map_err(|_| bad(cmd, "cannot allocate keyframes"))?;
+        for k in list {
+            let tl = k.get("time").and_then(Value::as_i64).map(Tick).ok_or_else(|| bad(cmd, "every keyframe needs an integer `time`"))?;
+            if tl < start || tl >= end {
+                return Err(bad(cmd, "keyframe times must lie inside the clip"));
+            }
+            let value = k.get("value").cloned().ok_or_else(|| bad(cmd, format!("`{pid}` keyframe needs a `value`")))?;
+            keys.push((it.source_time_at(tl), value));
+        }
+        converted.push((pid.clone(), keys));
+    }
+    let e = match &request.effect {
+        Value::Number(n) => it.effects.get_mut(n.as_u64().unwrap_or(0) as usize),
+        Value::String(sid) => it.effects.iter_mut().find(|e| &e.effect == sid),
+        _ => None,
+    }
+    .ok_or_else(|| bad(cmd, "no such effect on clip"))?;
+    if request.effect == json!("opacity") || request.effect == json!("motion") {
+        e.enabled = true;
+    }
+    let def = e.def();
+    for pid in request.params.keys().chain(request.statics.keys()) {
+        if !e.params.contains_key(pid)
+            && let Some(d) = def.and_then(|d| d.param(pid))
+        {
+            e.params.insert(pid.clone(), filmcraft_project::Param::new(d.default.clone()));
+        }
+    }
+    let mut staged: Vec<(String, Vec<(Tick, ParamValue)>)> = Vec::new();
+    for (pid, list) in &converted {
+        if def.and_then(|d| d.param(pid)).is_some_and(|d| !d.animatable) {
+            return Err(bad(cmd, format!("`{pid}` cannot be animated")));
+        }
+        let prm = e.param(pid).ok_or_else(|| bad(cmd, format!("no param `{pid}`")))?;
+        let mut keys: Vec<(Tick, ParamValue)> = Vec::new();
+        keys.try_reserve_exact(list.len()).map_err(|_| bad(cmd, "cannot allocate keyframes"))?;
+        for (t, value) in list {
+            let v = json_to_param(&prm.value, value).ok_or_else(|| bad(cmd, format!("`{pid}` value has the wrong type")))?;
+            if let ParamValue::Float(f) = &v
+                && !f.is_finite()
+            {
+                return Err(bad(cmd, format!("`{pid}` value must be finite")));
+            }
+            if let ParamValue::Vec2(p) = &v
+                && !(p.x.is_finite() && p.y.is_finite())
+            {
+                return Err(bad(cmd, format!("`{pid}` value must be finite")));
+            }
+            keys.push((*t, v));
+        }
+        staged.push((pid.clone(), keys));
+    }
+    let mut statics: Vec<(String, ParamValue)> = Vec::new();
+    for (pid, value) in &request.statics {
+        let prm = e.param(pid).ok_or_else(|| bad(cmd, format!("no param `{pid}`")))?;
+        statics.push((pid.clone(), json_to_param(&prm.value, value).ok_or_else(|| bad(cmd, format!("`{pid}` value has the wrong type")))?));
+    }
+    let mut count = 0usize;
+    for (pid, keys) in staged {
+        let Some(prm) = e.param_mut(&pid) else { continue };
+        if request.replace
+            && let (Some(first), Some(last)) = (keys.iter().map(|k| k.0).min(), keys.iter().map(|k| k.0).max())
+        {
+            prm.keyframes.retain(|k| k.time < first || k.time > last);
+        }
+        for (t, v) in keys {
+            prm.put_keyframe(t, v);
+            if request.hold
+                && let Some(k) = prm.keyframes.iter_mut().find(|k| k.time == t)
+            {
+                k.interp = filmcraft_project::Interpolation::Hold;
+            }
+            count = count.saturating_add(1);
+        }
+    }
+    for (pid, v) in statics {
+        if let Some(prm) = e.param_mut(&pid) {
+            prm.value = v;
+        }
+    }
+    Ok(count)
 }
 
 fn keyframe_op(s: &mut Session, p: &Value, op: &str) -> Result<Value> {

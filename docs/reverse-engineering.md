@@ -135,3 +135,17 @@ for full-range point tracking, so offscreen frames do not create decoding reques
 ## Object masks
 
 SAM 2.1 is an independent optional model tool. See [setup, usage and mask export](reverse-engineering-sam2.md).
+
+## Components menu and 2D camera
+
+The tool menu lists the scene components to extract (2D camera, 3D camera, shots, look,
+dialogue, music, sound effects, script, figure and object movements, text and titles, effects
+and transitions), enabled as they are built, with the raw analysis layers under **Evidence**.
+The 2D camera is built step by step: [2D camera](reverse-engineering-camera2d.md).
+
+## Shots & look, camera moves, AI brief
+
+Pure-Rust shot detection with per-shot look (palette, key, pixel grid, cadence), camera-language
+labels from the global fit, and a per-shot Markdown + JSON breakdown for people and language
+models: [shots, look and the brief](reverse-engineering-shots-look.md). What a complete breakdown
+still needs, ranked: [roadmap](reverse-engineering-roadmap.md).

@@ -183,6 +183,8 @@ pub struct Layout {
     pub scroll: f64,
     /// The y of the divider between the video tracks (above) and the audio tracks (below).
     pub split_y: f32,
+    /// Height of the fixed lanes above the tracks (RE components, caption tracks, their dividers).
+    pub lanes_h: f32,
 }
 
 impl Layout {
@@ -200,12 +202,11 @@ impl Layout {
 /// #483: where a drop at `y` adds a track: the empty space above the top video track (a video
 /// track) or below the last audio track (an audio track), never over a track, the caption tracks
 /// or the Mix row. Gives the kind and the band the new track would take (`vh` / `ah` high).
-fn new_track_at(seq: &Sequence, layout: &Layout, y: f32, vh: f32, ah: f32) -> Option<(TrackKind, Rect)> {
+fn new_track_at(_seq: &Sequence, layout: &Layout, y: f32, vh: f32, ah: f32) -> Option<(TrackKind, Rect)> {
     if layout.row_at(y).is_some() {
         return None;
     }
-    let cap_n = seq.caption_tracks.len();
-    let tracks_top = layout.content.min.y + if cap_n > 0 { cap_n as f32 * super::timeline_captions::ROW_H + DIVIDER_H } else { 0.0 };
+    let tracks_top = layout.content.min.y + layout.lanes_h;
     let band = |y0: f32, y1: f32| Rect::from_min_max(pos2(layout.content.min.x, y0), pos2(layout.content.max.x, y1));
     if y < layout.split_y {
         let top = layout.rows.iter().filter(|r| r.kind == TrackKind::Video).map(|r| r.rect.min.y).fold(layout.split_y, f32::min);
@@ -338,11 +339,18 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let scroll = app.ui.timeline.scroll;
 
     // ---- rows
-    // caption tracks sit in their own area above the video tracks
+    // the RE components lane, then the caption tracks, sit in their own areas above the video tracks
+    let comp_n = usize::from(app.ui.timeline.show_components_lane && !seq.components.is_empty());
+    let components_area =
+        Rect::from_min_max(pos2(rect.min.x, content.min.y), pos2(content.max.x, content.min.y + comp_n as f32 * super::timeline_components::ROW_H));
+    let comp_h = if comp_n > 0 { components_area.height() + DIVIDER_H } else { 0.0 };
     let cap_n = seq.caption_tracks.len();
-    let caption_area = Rect::from_min_max(pos2(rect.min.x, content.min.y), pos2(content.max.x, content.min.y + cap_n as f32 * super::timeline_captions::ROW_H));
+    let caption_area = Rect::from_min_max(
+        pos2(rect.min.x, content.min.y + comp_h),
+        pos2(content.max.x, content.min.y + comp_h + cap_n as f32 * super::timeline_captions::ROW_H),
+    );
     let cap_h = if cap_n > 0 { caption_area.height() + DIVIDER_H } else { 0.0 };
-    let tracks_area = Rect::from_min_max(pos2(content.min.x, content.min.y + cap_h), content.max);
+    let tracks_area = Rect::from_min_max(pos2(content.min.x, content.min.y + comp_h + cap_h), content.max);
     let split_y = tracks_area.min.y + (tracks_area.height() - DIVIDER_H) * app.ui.timeline.split;
     let video_area = Rect::from_min_max(pos2(rect.min.x, tracks_area.min.y), pos2(content.max.x, split_y));
     let audio_area = Rect::from_min_max(pos2(rect.min.x, split_y + DIVIDER_H), pos2(content.max.x, tracks_area.max.y - MASTER_H));
@@ -368,7 +376,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         let rect = Rect::from_min_max(pos2(content.min.x, top), pos2(content.max.x, top + ah));
         rows.push(Row { track: tr.id, kind: TrackKind::Audio, index: i, rect, lane: app.ui.timeline.track_lanes.contains_key(&tr.id.0) });
     }
-    let layout = Layout { content, ruler, rows: rows.clone(), pps, scroll, split_y };
+    let layout = Layout { content, ruler, rows: rows.clone(), pps, scroll, split_y, lanes_h: comp_h + cap_h };
     app.tl.layout = Some(layout.clone());
 
     // ---- backgrounds
@@ -544,6 +552,11 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         painter.rect_filled(Rect::from_min_max(pos2(rect.min.x, caption_area.max.y), pos2(content.max.x, caption_area.max.y + DIVIDER_H)), 0.0, t.app_bg);
         super::timeline_captions::paint(app, ui, &seq, caption_area, &layout, &t);
     }
+    // ---- RE components lane
+    if comp_n > 0 {
+        painter.rect_filled(Rect::from_min_max(pos2(rect.min.x, components_area.max.y), pos2(content.max.x, components_area.max.y + DIVIDER_H)), 0.0, t.app_bg);
+        super::timeline_components::paint(app, ui, &seq, components_area, &layout, &t);
+    }
 
     // ---- top block: timecode + toggles, ruler
     draw_top(app, ui, rect, &seq, &layout, &t, seq_id);
@@ -603,6 +616,9 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     super::timeline_automation::show(app, ui, &seq, &layout, aclip);
     if cap_n > 0 {
         super::timeline_captions::interact(app, ui, &seq, caption_area, &layout);
+    }
+    if comp_n > 0 {
+        super::timeline_components::interact(app, ui, &seq, components_area, &layout, &t);
     }
     let _ = (visible, TICKS_PER_SECOND);
 }
@@ -1302,6 +1318,8 @@ fn draw_top(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, seq: &Sequenc
                     }
                 });
                 ui.checkbox(&mut app.ui.timeline.show_waveforms, tl!("Show Audio Waveform"));
+                let c = ui.checkbox(&mut app.ui.timeline.show_components_lane, tl!("Show RE Components Lane"));
+                app.auto.add("timeline.settings.showComponentsLane", c.rect, "Show RE Components Lane");
                 ui.separator();
                 let mut te = app.session.state.show_through_edits;
                 let c = ui.checkbox(&mut te, tl!("Show Through Edits"));
@@ -2957,6 +2975,7 @@ mod new_track_tests {
             pps: 100.0,
             scroll: 0.0,
             split_y: 200.0,
+            lanes_h: 0.0,
         };
         let at = |y| new_track_at(&seq, &layout, y, 50.0, 50.0);
         assert_eq!(at(40.0), Some((TrackKind::Video, Rect::from_min_max(pos2(0.0, 100.0), pos2(800.0, 150.0)))));

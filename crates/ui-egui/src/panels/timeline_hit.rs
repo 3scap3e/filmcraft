@@ -339,6 +339,7 @@ mod tests {
             pps: 100.0,
             scroll: 0.0,
             split_y: TOP + 60.0,
+            lanes_h: 0.0,
         };
         (seq, layout, track)
     }

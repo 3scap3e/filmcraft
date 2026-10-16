@@ -11,3 +11,5 @@ Runtime installation and UI behavior: `docs/reverse-engineering.md`. Existing pa
 Run bounded-protocol/provenance tests with `cargo test --locked -p filmcraft-vision --lib`. Verify the installed runtime on the editor's own Ocean Sunset generator with `cargo run --locked -p filmcraft-vision --example ocean_motion -- /tmp/ocean-sea-raft 34 141`. This runs all 108 frames and 107 consecutive comparisons without compiling the editor.
 
 `display` provides independently tested, serializable presentation controls, shared settings, and per-frame overrides. They filter visualization only; model predictions remain intact.
+
+Pure-Rust analyzers that need no runtime: `shots` (frame signatures, cut / black-run / held-frame detection, shot statistics), `look` (luma, saturation, warmth, k-means palette, pixel-grid pitch, letterbox for one frame), `camera_moves` (pan / tilt / zoom / roll labels and segments from `global_motion` fits) and `brief` (the per-shot Markdown breakdown built from those results plus object presence). Each validates hostile input and is covered by `cargo test --locked -p filmcraft-vision --lib`. Behaviour: `docs/reverse-engineering-shots-look.md`.

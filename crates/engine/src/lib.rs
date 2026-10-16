@@ -16,6 +16,7 @@ pub mod captions;
 pub mod clip_ops;
 pub mod color;
 pub mod commands;
+pub mod components;
 pub mod demo;
 pub mod essential_sound;
 pub mod export_tools;
@@ -861,7 +862,8 @@ impl Session {
                 f(seq, &mut ctx, st)?
             };
             p.next_id = next;
-            if let Some(s) = p.sequence(seq_id) {
+            if let Some(s) = p.sequence_mut(seq_id) {
+                s.prune_components();
                 s.check().map_err(EngineError::Other)?;
             }
             Ok(r)
@@ -1163,6 +1165,8 @@ mod sequence_inspect_tests;
 mod sequence_tabs_tests;
 #[cfg(test)]
 mod sequence_tools_tests;
+#[cfg(test)]
+mod set_keyframes_tests;
 #[cfg(test)]
 mod settings_tests;
 #[cfg(test)]

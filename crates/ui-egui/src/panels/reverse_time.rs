@@ -54,11 +54,12 @@ pub(super) fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui) {
         super::reverse_motion::show(app, ui);
         return;
     }
-    if !current(app) && reverse_engineering::motion_is_current(app) {
-        if let Err(e) = build(app) {
-            ui.colored_label(egui::Color32::LIGHT_RED, e);
-            return;
-        }
+    if !current(app)
+        && reverse_engineering::motion_is_current(app)
+        && let Err(e) = build(app)
+    {
+        ui.colored_label(egui::Color32::LIGHT_RED, e);
+        return;
     }
     ui.label("Sampled image motion · analysis pixels per frame comparison");
     ui.label("X: right (+), left (−). Y: down (+), up (−). Strength: average movement regardless of direction.");
@@ -116,16 +117,16 @@ pub(super) fn graph(app: &mut FilmcraftApp, ui: &mut egui::Ui) {
         let ticks = r.ticks_per_second.max(1) as f64;
         ui.label(format!("Timeline {:.3}s → {:.3}s", first.to_tick as f64 / ticks, last.to_tick as f64 / ticks));
     }
-    if frame > 0 {
-        if let Some(sample) = samples.get(frame - 1) {
-            let value = |v: Option<f64>| v.map(|v| format!("{v:.4}")).unwrap_or_else(|| "unavailable".into());
-            ui.label(format!(
-                "Selected: X {} · Y {} · strength {} px",
-                value(sample.mean_dx_pixels),
-                value(sample.mean_dy_pixels),
-                value(sample.mean_magnitude_pixels)
-            ));
-        }
+    if frame > 0
+        && let Some(sample) = samples.get(frame - 1)
+    {
+        let value = |v: Option<f64>| v.map(|v| format!("{v:.4}")).unwrap_or_else(|| "unavailable".into());
+        ui.label(format!(
+            "Selected: X {} · Y {} · strength {} px",
+            value(sample.mean_dx_pixels),
+            value(sample.mean_dy_pixels),
+            value(sample.mean_magnitude_pixels)
+        ));
     }
 
     if let Some(pos) = response.hover_pos() {
@@ -140,10 +141,10 @@ pub(super) fn graph(app: &mut FilmcraftApp, ui: &mut egui::Ui) {
             s.mean_dy_pixels,
             s.mean_magnitude_pixels
         ));
-        if response.clicked() {
-            if let Err(e) = crate::menus::invoke(app, ui.ctx(), "reverseEngineering.motionFrame", json!({"frameIndex":i+1})) {
-                app.ui.status = e;
-            }
+        if response.clicked()
+            && let Err(e) = crate::menus::invoke(app, ui.ctx(), "reverseEngineering.motionFrame", json!({"frameIndex":i+1}))
+        {
+            app.ui.status = e;
         }
     }
 }

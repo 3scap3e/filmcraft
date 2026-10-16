@@ -104,7 +104,13 @@ pub(super) fn command(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, par
         ctx.request_repaint();
         return Ok(json!({"displayOnly":true}));
     }
-    if is_running(ctx) || super::reverse_motion::is_running(ctx) || super::reverse_tools::is_running(ctx) || super::reverse_tracking::is_running(ctx) {
+    if is_running(ctx)
+        || super::reverse_motion::is_running(ctx)
+        || super::reverse_tools::is_running(ctx)
+        || super::reverse_tracking::is_running(ctx)
+        || super::reverse_shots::is_running(ctx)
+        || super::reverse_camera2d::is_running(ctx)
+    {
         return Err("Cancel the running analysis before changing masks".into());
     }
     prepare(app)?;
@@ -315,16 +321,16 @@ pub(super) fn controls(app: &mut FilmcraftApp, ui: &mut egui::Ui) {
     if let Some(c) = s.sam_captures.get(s.sam_frame) {
         ui.label(format!("Frame {}/{} · {}", s.sam_frame + 1, count, reverse_engineering::timecode(app, c)));
     }
-    if current(app) {
-        if let Some(r) = s.sam_report.as_ref() {
-            for (i, t) in r.inference.tracks.iter().enumerate() {
-                let color = object_color(app, &t.object.name);
-                if let Some(Some(g)) = r.geometry.get(i).and_then(|v| v.get(s.sam_frame)) {
-                    let center = g.centroid.map(|[x, y]| format!("{x:.4}, {y:.4}")).unwrap_or_else(|| "empty prediction".into());
-                    ui.colored_label(color, format!("{} · {} mask pixels · centroid {center}", t.object.name, g.area_pixels));
-                } else {
-                    ui.colored_label(color, format!("{} · no mask prediction for this frame", t.object.name));
-                }
+    if current(app)
+        && let Some(r) = s.sam_report.as_ref()
+    {
+        for (i, t) in r.inference.tracks.iter().enumerate() {
+            let color = object_color(app, &t.object.name);
+            if let Some(Some(g)) = r.geometry.get(i).and_then(|v| v.get(s.sam_frame)) {
+                let center = g.centroid.map(|[x, y]| format!("{x:.4}, {y:.4}")).unwrap_or_else(|| "empty prediction".into());
+                ui.colored_label(color, format!("{} · {} mask pixels · centroid {center}", t.object.name, g.area_pixels));
+            } else {
+                ui.colored_label(color, format!("{} · no mask prediction for this frame", t.object.name));
             }
         }
     }
@@ -361,15 +367,15 @@ pub(super) fn overlay(app: &mut FilmcraftApp, ui: &egui::Ui, rect: egui::Rect) {
     }
     if !is_running(ui.ctx()) && !s.sam_binary_view {
         let response = ui.interact(rect.intersect(ui.clip_rect()), egui::Id::new("reverse-sam-point-pick"), egui::Sense::click());
-        if response.clicked() {
-            if let Some(pos) = response.interact_pointer_pos() {
-                invoke(
-                    app,
-                    ui.ctx(),
-                    "reverseEngineering.addSamPoint",
-                    json!({"position":[((pos.x-rect.left())/rect.width().max(1.0)).clamp(0.0,0.999999),((pos.y-rect.top())/rect.height().max(1.0)).clamp(0.0,0.999999)]}),
-                );
-            }
+        if response.clicked()
+            && let Some(pos) = response.interact_pointer_pos()
+        {
+            invoke(
+                app,
+                ui.ctx(),
+                "reverseEngineering.addSamPoint",
+                json!({"position":[((pos.x-rect.left())/rect.width().max(1.0)).clamp(0.0,0.999999),((pos.y-rect.top())/rect.height().max(1.0)).clamp(0.0,0.999999)]}),
+            );
         }
     }
 }

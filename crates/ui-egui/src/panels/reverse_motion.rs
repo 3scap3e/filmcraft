@@ -197,6 +197,8 @@ fn start_job(
 pub fn poll(app: &mut FilmcraftApp, ctx: &egui::Context) {
     super::reverse_sam::poll(app, ctx);
     super::reverse_tracking::poll(app, ctx);
+    super::reverse_shots::poll(app, ctx);
+    super::reverse_camera2d::poll(app, ctx);
     super::reverse_tools::poll(app, ctx);
     let Some(job) = ctx.data(|d| d.get_temp::<Job>(job_id())) else {
         return;
@@ -244,14 +246,13 @@ pub fn poll(app: &mut FilmcraftApp, ctx: &egui::Context) {
                     d.remove::<(usize, usize)>(sample_id());
                 });
                 super::reverse_engineering::reset_decode_timer(ctx);
-                if matches!(app.ui.panels.reverse_engineering.active_tool.as_str(), "globalMotion" | "localMotion" | "motionRegions")
+                if matches!(app.ui.panels.reverse_engineering.active_tool.as_str(), "globalMotion" | "localMotion" | "motionRegions" | "cameraMoves")
                     && super::reverse_engineering::motion_is_current(app)
+                    && let Err(error) = super::reverse_tools::command(app, ctx, "reverseEngineering.runGlobal", &json!({}))
                 {
-                    if let Err(error) = super::reverse_tools::command(app, ctx, "reverseEngineering.runGlobal", &json!({})) {
-                        app.ui.status = error.clone();
-                        ctx.data_mut(|d| d.insert_temp(error_id(), error));
-                        return;
-                    }
+                    app.ui.status = error.clone();
+                    ctx.data_mut(|d| d.insert_temp(error_id(), error));
+                    return;
                 }
                 app.ui.status = if selected_frame > 0 {
                     format!(
@@ -477,30 +478,32 @@ pub fn show_result_controls(app: &mut FilmcraftApp, ui: &mut egui::Ui) {
         let label = format!("Frame {} / {} · {}", frame + 1, count, super::reverse_engineering::timecode(app, capture));
         let response = ui.label(label);
         app.auto.add("reverseEngineering.timecode", response.rect, "Exact timestamp of the displayed analyzed frame");
-        if frame > 0 {
-            if let Some(pair) = app.ui.panels.reverse_engineering.motion.as_ref().and_then(|r| r.pairs.get(frame - 1)) {
-                if app.ui.panels.reverse_engineering.active_tool == "globalMotion" {
-                    super::reverse_tools::caption(app, ui, frame - 1);
-                } else if app.ui.panels.reverse_engineering.active_tool == "motionRegions" {
-                    super::reverse_regions::caption(app, ui, frame - 1);
-                } else if app.ui.panels.reverse_engineering.active_tool == "localMotion" {
-                    super::reverse_local::caption(app, ui, frame - 1);
-                } else {
-                    ui.label(format!("Motion: frame {} → {} · {} SEA-RAFT samples", frame, frame + 1, pair.vectors.len()));
-                }
-                if app.ui.panels.reverse_engineering.active_tool == "opticalFlow"
-                    && let Some((selected_pair, sample)) = ui.ctx().data(|d| d.get_temp::<(usize, usize)>(sample_id()))
-                    && selected_pair == frame - 1
-                    && let Some(vector) = pair.vectors.get(sample)
-                {
-                    let dx = (vector.to[0] - vector.from[0]) * pair.analyzed_size[0] as f32;
-                    let dy = (vector.to[1] - vector.from[1]) * pair.analyzed_size[1] as f32;
-                    ui.label(format!(
-                        "Sample {sample}: Δx {dx:.4}px · Δy {dy:.4}px · magnitude {:.4}px · uncertainty log-scale {:?}",
-                        dx.hypot(dy),
-                        vector.uncertainty_log_scale
-                    ));
-                }
+        if frame > 0
+            && let Some(pair) = app.ui.panels.reverse_engineering.motion.as_ref().and_then(|r| r.pairs.get(frame - 1))
+        {
+            if app.ui.panels.reverse_engineering.active_tool == "globalMotion" {
+                super::reverse_tools::caption(app, ui, frame - 1);
+            } else if app.ui.panels.reverse_engineering.active_tool == "motionRegions" {
+                super::reverse_regions::caption(app, ui, frame - 1);
+            } else if app.ui.panels.reverse_engineering.active_tool == "localMotion" {
+                super::reverse_local::caption(app, ui, frame - 1);
+            } else if app.ui.panels.reverse_engineering.active_tool == "cameraMoves" {
+                super::reverse_camera::caption(app, ui, frame - 1);
+            } else {
+                ui.label(format!("Motion: frame {} → {} · {} SEA-RAFT samples", frame, frame + 1, pair.vectors.len()));
+            }
+            if app.ui.panels.reverse_engineering.active_tool == "opticalFlow"
+                && let Some((selected_pair, sample)) = ui.ctx().data(|d| d.get_temp::<(usize, usize)>(sample_id()))
+                && selected_pair == frame - 1
+                && let Some(vector) = pair.vectors.get(sample)
+            {
+                let dx = (vector.to[0] - vector.from[0]) * pair.analyzed_size[0] as f32;
+                let dy = (vector.to[1] - vector.from[1]) * pair.analyzed_size[1] as f32;
+                ui.label(format!(
+                    "Sample {sample}: Δx {dx:.4}px · Δy {dy:.4}px · magnitude {:.4}px · uncertainty log-scale {:?}",
+                    dx.hypot(dy),
+                    vector.uncertainty_log_scale
+                ));
             }
         }
     }
@@ -524,7 +527,7 @@ pub fn show_result(app: &mut FilmcraftApp, ui: &mut egui::Ui) {
 
 pub fn overlay(app: &mut FilmcraftApp, ui: &egui::Ui, capture: &ReverseEngineeringCapture, rect: egui::Rect) {
     let tool = app.ui.panels.reverse_engineering.active_tool.as_str();
-    if matches!(tool, "motionOverTime" | "discontinuities") {
+    if matches!(tool, "motionOverTime" | "discontinuities" | "cameraMoves") {
         return;
     }
     if tool == "globalMotion" {

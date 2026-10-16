@@ -189,6 +189,9 @@ pub fn handle(app: &mut FilmcraftApp, ctx: &egui::Context, req: &ControlRequest)
                 if let Some(v) = tl.get("audioTrackHeight").and_then(Value::as_f64) {
                     app.ui.timeline.audio_track_h = v as f32;
                 }
+                if let Some(v) = tl.get("componentsLane").and_then(Value::as_bool) {
+                    app.ui.timeline.show_components_lane = v;
+                }
                 // Show Video Thumbnails: "off" or a mode ("head", "headAndTail", "continuous")
                 if let Some(m) = tl.get("thumbnails").and_then(Value::as_str) {
                     if m.eq_ignore_ascii_case("off") {

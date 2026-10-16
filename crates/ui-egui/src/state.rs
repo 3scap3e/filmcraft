@@ -194,6 +194,9 @@ pub struct TimelineView {
     #[serde(default)]
     pub thumbnail_mode: ThumbnailMode,
     pub show_waveforms: bool,
+    /// The RE lane above the video tracks: reverse-engineering components applied to clips.
+    #[serde(default = "yes")]
+    pub show_components_lane: bool,
     /// Follow playhead during playback (page scroll).
     pub follow: bool,
     pub fit_pending: bool,
@@ -230,6 +233,7 @@ impl Default for TimelineView {
             show_thumbnails: true,
             thumbnail_mode: ThumbnailMode::Head,
             show_waveforms: true,
+            show_components_lane: true,
             follow: true,
             fit_pending: true,
             fit_empty: None,

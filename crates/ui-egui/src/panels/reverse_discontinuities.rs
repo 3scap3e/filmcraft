@@ -69,10 +69,10 @@ pub(super) fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui) {
         ui.label("Change threshold (analysis px)");
         let response = ui.add(egui::DragValue::new(&mut threshold).range(0.001..=100.0).speed(0.01));
         app.auto.add("reverseEngineering.discontinuities.threshold", response.rect, "Minimum motion change to flag");
-        if response.changed() {
-            if let Err(e) = crate::menus::invoke(app, ui.ctx(), "reverseEngineering.setDiscontinuityOptions", json!({"thresholdPixels":threshold})) {
-                app.ui.status = e;
-            }
+        if response.changed()
+            && let Err(e) = crate::menus::invoke(app, ui.ctx(), "reverseEngineering.setDiscontinuityOptions", json!({"thresholdPixels":threshold}))
+        {
+            app.ui.status = e;
         }
     });
     ui.label(format!("{} candidates · {unavailable} unavailable comparisons", events.len()));
@@ -81,10 +81,10 @@ pub(super) fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui) {
         for event in events {
             let response = ui.button(format!("Frame {} · {:.3}px", event.frame_index + 1, event.score_pixels.unwrap_or(0.0)));
             app.auto.add(&format!("reverseEngineering.discontinuities.event.{}", event.frame_index), response.rect, "Inspect motion-change candidate");
-            if response.clicked() {
-                if let Err(e) = crate::menus::invoke(app, ui.ctx(), "reverseEngineering.motionFrame", json!({"frameIndex":event.frame_index})) {
-                    app.ui.status = e;
-                }
+            if response.clicked()
+                && let Err(e) = crate::menus::invoke(app, ui.ctx(), "reverseEngineering.motionFrame", json!({"frameIndex":event.frame_index}))
+            {
+                app.ui.status = e;
             }
         }
     });
@@ -133,10 +133,10 @@ pub(super) fn graph(app: &mut FilmcraftApp, ui: &mut egui::Ui) {
             c.timeline_tick as f64 / ticks,
             c.score_pixels
         ));
-        if response.clicked() {
-            if let Err(e) = crate::menus::invoke(app, ui.ctx(), "reverseEngineering.motionFrame", json!({"frameIndex":c.frame_index})) {
-                app.ui.status = e;
-            }
+        if response.clicked()
+            && let Err(e) = crate::menus::invoke(app, ui.ctx(), "reverseEngineering.motionFrame", json!({"frameIndex":c.frame_index}))
+        {
+            app.ui.status = e;
         }
     }
 }

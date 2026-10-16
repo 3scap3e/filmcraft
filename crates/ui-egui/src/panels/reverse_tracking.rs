@@ -95,7 +95,13 @@ pub(super) fn command(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, par
         }
         return Ok(json!({"cancelled":true}));
     }
-    if is_running(ctx) || super::reverse_motion::is_running(ctx) || super::reverse_tools::is_running(ctx) || super::reverse_sam::is_running(ctx) {
+    if is_running(ctx)
+        || super::reverse_motion::is_running(ctx)
+        || super::reverse_tools::is_running(ctx)
+        || super::reverse_sam::is_running(ctx)
+        || super::reverse_shots::is_running(ctx)
+        || super::reverse_camera2d::is_running(ctx)
+    {
         return Err("Cancel the current analysis before changing point tracking".into());
     }
     prepare(app)?;
@@ -115,10 +121,10 @@ pub(super) fn command(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, par
                 *label = state.tracking_group.clone();
             }
         }
-        if let Some(report) = state.tracking_report.as_mut() {
-            if report.queries == state.tracking_queries {
-                report.point_labels = state.tracking_labels.clone();
-            }
+        if let Some(report) = state.tracking_report.as_mut()
+            && report.queries == state.tracking_queries
+        {
+            report.point_labels = state.tracking_labels.clone();
         }
         return Ok(json!({"labelled":true}));
     }
@@ -342,12 +348,12 @@ pub(super) fn show_result_controls(app: &mut FilmcraftApp, ui: &mut egui::Ui) {
     let frame = app.ui.panels.reverse_engineering.tracking_frame.min(count - 1);
     if let Some(capture) = app.ui.panels.reverse_engineering.tracking_captures.get(frame).cloned() {
         ui.label(format!("Frame {} / {} · {}", frame + 1, count, reverse_engineering::timecode(app, &capture)));
-        if current(app) {
-            if let Some(report) = app.ui.panels.reverse_engineering.tracking_report.as_ref() {
-                let visible = report.inference.tracks.iter().filter(|t| t.observations.get(frame).and_then(Option::as_ref).is_some_and(|o| o.visible)).count();
-                let missing = report.inference.tracks.iter().filter(|t| t.observations.get(frame).is_none_or(Option::is_none)).count();
-                ui.label(format!("{visible} / {} points visible · {missing} missing continuations", report.inference.tracks.len()));
-            }
+        if current(app)
+            && let Some(report) = app.ui.panels.reverse_engineering.tracking_report.as_ref()
+        {
+            let visible = report.inference.tracks.iter().filter(|t| t.observations.get(frame).and_then(Option::as_ref).is_some_and(|o| o.visible)).count();
+            let missing = report.inference.tracks.iter().filter(|t| t.observations.get(frame).is_none_or(Option::is_none)).count();
+            ui.label(format!("{visible} / {} points visible · {missing} missing continuations", report.inference.tracks.len()));
         }
     }
 }

@@ -53,6 +53,7 @@ pub mod timecode;
 pub mod timeline;
 pub mod timeline_automation;
 pub mod timeline_captions;
+pub mod timeline_components;
 pub mod timeline_hit;
 pub mod timeline_volume;
 pub mod tools;
@@ -334,3 +335,9 @@ mod reverse_time;
 mod reverse_discontinuities;
 
 mod reverse_sam;
+
+mod reverse_camera;
+
+mod reverse_camera2d;
+
+mod reverse_shots;

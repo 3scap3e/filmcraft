@@ -10,6 +10,7 @@
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable))]
 
 pub mod caption;
+pub mod component;
 pub mod effect;
 pub mod essential;
 pub mod find;
@@ -32,6 +33,7 @@ use filmcraft_time::{FrameRate, TICKS_PER_SECOND, Tick, TimeRange};
 use serde::{Deserialize, Serialize};
 
 pub use caption::{Caption, CaptionAlign, CaptionAnchor, CaptionFormat, CaptionStyle, CaptionTrack, plain_text};
+pub use component::{AppliedComponent, ChangeKind, ComponentId, ComponentKind, ComponentMode, ComponentSample, ComponentSource};
 pub use effect::{EffectDef, EffectInstance, EffectKind, ParamDef, ParamKind, effect_defs, find_effect};
 pub use essential::{AudioType, EssentialSound};
 pub use find::{FindOp, FindQuery, FindRow, SearchBin};
@@ -998,6 +1000,9 @@ pub struct Sequence {
     /// Split In/Out points (Markers ▸ Mark Split): per-channel overrides of `mark_in`/`mark_out`.
     #[serde(default, skip_serializing_if = "SplitMarks::is_empty")]
     pub split: SplitMarks,
+    /// Reverse-engineering components applied to clips of this sequence (the timeline's RE lane).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub components: Vec<AppliedComponent>,
 }
 
 /// Split edit points: separate video and audio In/Out points (Markers ▸ Mark Split). `None` means
@@ -1097,7 +1102,15 @@ impl Sequence {
         for t in &self.caption_tracks {
             t.check()?;
         }
+        for c in &self.components {
+            c.check()?;
+        }
         Ok(())
+    }
+    /// Drop components whose clip no longer exists in the sequence.
+    pub fn prune_components(&mut self) {
+        let present: Vec<ClipId> = self.all_tracks().flat_map(|t| t.items.iter().map(|i| i.id)).collect();
+        self.components.retain(|c| present.contains(&c.clip));
     }
     /// The hostile-value bounds alone (settings, marks and every time range), without the
     /// structural invariants of [`Sequence::check`]: a project that breaks only those (e.g. an
@@ -1522,6 +1535,7 @@ impl Project {
             multicam: None,
             merged: None,
             split: SplitMarks::default(),
+            components: Vec::new(),
         };
         for i in 0..v {
             let id = TrackId(self.alloc_id());

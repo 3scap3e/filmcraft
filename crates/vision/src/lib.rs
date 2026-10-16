@@ -117,3 +117,13 @@ pub mod motion_time;
 pub mod discontinuities;
 
 pub mod sam2;
+
+pub mod brief;
+pub mod camera2d;
+pub mod camera_moves;
+pub mod features;
+pub mod look;
+pub mod matching;
+pub mod motion;
+pub mod shots;
+pub mod trajectory;

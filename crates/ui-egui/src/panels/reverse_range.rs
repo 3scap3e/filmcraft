@@ -36,6 +36,8 @@ pub(super) fn confirm(app: &mut FilmcraftApp, ctx: &egui::Context, params: &Valu
     if super::reverse_motion::is_running(ctx)
         || super::reverse_tools::is_running(ctx)
         || (super::reverse_tracking::is_running(ctx) || super::reverse_sam::is_running(ctx))
+        || super::reverse_shots::is_running(ctx)
+        || super::reverse_camera2d::is_running(ctx)
     {
         return Err("Cancel analysis before accepting a new range".into());
     }
@@ -73,11 +75,11 @@ pub(super) fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
             for (accept, label, id) in [(false, "Cancel", "reverseEngineering.range.cancel"), (true, "Yes, start again", "reverseEngineering.range.confirm")] {
                 let response = ui.button(label);
                 app.auto.add(id, response.rect, label);
-                if response.clicked() {
-                    if let Err(e) = crate::menus::invoke(app, ctx, "reverseEngineering.confirmRangeChange", json!({"accept":accept})) {
-                        app.ui.status = e.clone();
-                        ctx.data_mut(|d| d.insert_temp(egui::Id::new("reverse-range-confirm-error"), e));
-                    }
+                if response.clicked()
+                    && let Err(e) = crate::menus::invoke(app, ctx, "reverseEngineering.confirmRangeChange", json!({"accept":accept}))
+                {
+                    app.ui.status = e.clone();
+                    ctx.data_mut(|d| d.insert_temp(egui::Id::new("reverse-range-confirm-error"), e));
                 }
             }
         });
