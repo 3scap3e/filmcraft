@@ -1222,6 +1222,14 @@
 	Head and Tail	先頭と末尾
 	Continuous	連続
 	Show Audio Waveform	オーディオ波形を表示
+	Show RE Components Lane	REコンポーネントレーンを表示
+	Components	コンポーネント
+	Remove Component	コンポーネントを削除
+	Export Camera File…	カメラファイルを書き出し…
+	Select Clip	クリップを選択
+	Bypass Component	コンポーネントをバイパス
+	Enable Component	コンポーネントを有効化
+	Copy Camera Description	カメラの説明をコピー
 	Expand All Tracks	すべてのトラックを展開
 	Minimize All Tracks	すべてのトラックを最小化
 	Unrendered: should play back in real time	未レンダリング: リアルタイムで再生できるはずです

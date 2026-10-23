@@ -178,6 +178,97 @@ Known limits: the three weak-evidence artefacts of step D pass into the keyframe
 (the residual marks them); a clip with non-uniform scale or a different pixel aspect ratio is
 refused; keyframes are written per frame (no thinning yet).
 
+### The page
+
+The 2D camera tool takes the whole panel (`reverse_camera2d::page`), in three fixed zones so the
+result reads before the numbers do:
+
+1. **Header**: back to the tools, the name, a status badge (*Not analysed*, *Analysing…*,
+   *Analysed*, *Analysed · saved*, *Stale · analyse again*) and, at the right, the context
+   (sequence, frame range, frame count, fps).
+2. **Verdict** (`reverse_camera2d::verdict`, pure and unit-tested): one sentence built from the
+   per-comparison states and the solved path, "Camera still from 0.0 s to 15.6 s, a 10-frame
+   shake at 15.6–16.0 s, still again to the end", with pans/tilts in source pixels, zooms in
+   percent and rolls in degrees; runs shorter than three frames merge into their neighbour. Under
+   it, one quality line: the share of frames with solid evidence, the doubtful frames (residual
+   above 2 px) with their times, the frames without evidence, the analysed duration.
+3. **Viewer and graphs**: the analysed frame with its overlay (Points / Matches & regions /
+   Difference), the frame strip and navigation on the left; the camera path graph, the evidence
+   graph and a *This frame* card with two or three facts on the right. Below about 700 px of
+   width the two columns stack.
+4. **Actions**, in the order of the work: *Analyse* (or *Analyse again*) · *Apply to N selected
+   clips* · *Stabilize selected* · *Export camera…* · *Apply camera file…*. An action that cannot
+   run yet is not shown rather than disabled. The applied components of the sequence are listed
+   underneath.
+5. **Details** (folded): every number the old panel printed (summary, pose, comparison fit,
+   photometric error, regions). **Advanced** (folded): the 18 parameters and *Reset to
+   defaults*.
+
+The tools menu shows the components as cards (name, one line on what it extracts, a status
+badge: *Ready*, *Analysed*, *Saved*, *Coming soon*), and every other tool page starts with the
+same back button and status badge. The panel opens in the Timeline's group by default, where it
+is wide; clicking a bar on the RE lane selects the clip, moves the playhead and opens this page
+on the clicked frame, and the page's selected frame is marked on the lane.
+
+Automation ids added: `reverseEngineering.status`, `reverseEngineering.verdict`,
+`reverseEngineering.quality`, `reverseEngineering.details`, `reverseEngineering.advanced`,
+`reverseEngineering.camera2d.thisFrame`, `reverseEngineering.camera2d.resetOptions`; the old ids
+remain (`reverseEngineering.tool.<id>` now on the cards, `reverseEngineering.tool.back`).
+
+### The camera in cinema terms, and as a prompt
+
+The measured path is one layer; the second is its reading in the grammar of cinematography
+(`crates/vision/src/cinema.rs`, pure and unit-tested), derived from the measurements and never
+invented. The evidence states and the solved path become **beats**: static shot, pan left/right,
+tilt up/down, push in, pull out, roll, handheld shake (a short jolt between holds whose net travel
+is small against its frame-to-frame steps), slight drift and no camera evidence; each with its
+frame span and seconds, centre displacement in source pixels, zoom factor, roll, the largest
+frame-to-frame step, the numeric rate the speed label was read from (`speedRate`) and the label
+(slow below 0.08 frame widths per second, steady below 0.25, fast above; zoom in scale fraction
+per second, roll in degrees/45 per second). A beat can carry a secondary move (a push in with a
+pan right). Every word is a classification of the numbers next to it, and the thresholds travel
+with the result in a **`rules`** block (minimum run, shake length and net-travel ratio,
+translation, zoom and roll minimums, speed boundaries and unit, which evidence states count as
+still), because the grammar of cinematography has no numeric standard: a reader outside FilmCraft
+can reinterpret the measurements under its own criteria. A one-sentence **summary** ("Camera:
+static shot for 1.0 s (0.0–1.0 s); then steady pan left across 30 % of the frame over 2.0 s
+(1.0–3.0 s); then static shot for 1.0 s (3.0–4.0 s).") is kept as a human-readable label.
+FilmCraft writes no prompts and maps to no vendor vocabulary: that is the job of whoever consumes
+the description (a person, or a model outside FilmCraft, later through FilmCraft's own MCP
+server and chat).
+
+**Honest terms and the finer classifications.** A 2D similarity cannot tell a turn from a
+sideways move nor a lens change from a forward move (both need parallax, the 3D camera's job), so
+the terms name both readings: *pan or truck left*, *tilt or pedestal up*, *zoom or dolly in*, and
+each beat lists its `alternatives` (`["pan left", "truck left"]`); `rules.ambiguities` says why.
+On top of the move and its speed, every beat carries:
+
+| field | meaning | rule |
+|---|---|---|
+| `directionDegrees`, `diagonal` | screen direction of the displacement (0 right, 90 down, 180 left, −90 up); diagonal when the minor axis is at least `diagonalMinRatio` (0.4) of the major | translating beats |
+| `extreme` | `whipPan` at ≥ `whipPanRateMin` (1.0 frame widths/s), `crashZoom` at ≥ `crashZoomRateMin` (0.5 of scale/s) | from `speedRate` |
+| `steadiness`, `jitterRms`, `shakeHz` | the path minus its centred `steadinessWindowFrames` (5) moving average, RMS in frame widths: `lockedOff` < 0.0005, `smooth` < 0.003, `minorShake` < 0.01, else `severeShake`; the dominant jitter frequency (zero crossings on the stronger axis) for beats of at least `shakeHzMinSeconds` (1 s) that are not locked off | every beat with evidence |
+| `velocityProfile` | `linear`, `easeIn`, `easeOut`, `easeInOut`: a third of the move covering less than `velocityEasedBelowRatio` (0.5) of the middle third is eased; moving beats of at least `velocityMinFrames` (6) | moving beats |
+| `canted`, `cantDegrees` | a still beat held at a mean roll of at least `cantedMinDegrees` (3°) from the first frame: a Dutch angle | still beats |
+| `confidence` | `solidFraction` of the beat's comparisons that were verified static or moving (`rules.solidStates`), `meanResidualPx`, and `uncertain` below `uncertainBelowFraction` (0.6) | every beat with evidence |
+
+The summary says them only when they matter: "whip diagonal pan or truck left across 31 % of the
+frame over 0.2 s", "steady ease-in-out zoom or dolly in by 30 % over 2.0 s", "static shot for
+1.0 s, handheld (minor shake, 4 Hz)", "canted static shot (Dutch angle, 6°) for 1.0 s", and
+"(uncertain)" after a beat whose evidence was mostly unverified. Verified by
+`cargo test -p filmcraft-vision --lib cinema` on synthetic paths (a 4 Hz shake, a smootherstep
+zoom, an ease-out pan, a hold after a 6° roll, a beat of mostly unverified comparisons).
+
+Where it appears: the panel's verdict headline is the summary, with a **Copy description**
+button under it; `reverseEngineering.copyDescription {"id"?}` copies the complete camera
+description as JSON (the camera file: source, measured path in sequence pixels, Motion keyframes,
+`cinematography` with beats, rules and summary, plus the `component` record when an applied
+component is asked for) to the clipboard and returns it; the camera file carries the same
+`cinematography` object, rebuilt from the samples when a component is exported; an applied
+component records the summary (`summary` in `components.add` and `components.list`, shown in the
+RE lane's tooltip), and the lane's context menu has *Copy Camera Description*. Automation ids:
+`reverseEngineering.copyDescription`, `timeline.components.{id}.menu.copyDescription`.
+
 ### Applied components and the RE lane
 
 An applied camera is more than keyframes: the project records it as an **applied component**
@@ -187,8 +278,26 @@ size, frame rate, range, file) and one sample per frame (offset tick, centre dis
 sequence pixels, scale, rotation, residual, evidence state). The record is written in the
 **same undo step** as the keyframes by `components.add` (`crates/engine/src/components.rs`,
 which the panel uses instead of `effects.setKeyframes`); `components.remove {"id"}` takes the
-record and exactly the keyframes it wrote away in one step; `components.list` reports them with
-their change marks; deleting a clip prunes its components. Projects save and reload them.
+record and exactly the keyframes it wrote away in one step; `components.setEnabled {"id"?,"enabled"}`
+bypasses one component (or all of them without `id`) by switching its effect off on the clip, so
+the picture shows without it, and switches it back on; `components.list` reports them (with
+`enabled`, `followsClip` and the current span) and their change marks; deleting a clip prunes
+its components. Removing a component also puts back the static values it overwrote
+(`previous`). `components.applyLookRange` places a look on a new adjustment layer over a time
+range (see [look](reverse-engineering-look.md)); such a component `follows_clip`: the lane shows
+the clip's current span, so dragging or trimming the layer moves the look. Projects save and
+reload them.
+
+The RE lane is drawn as a track row: the video tracks' height, a header with the `RE` badge, a
+lock (the lane's own: `timeline.components.locked`, no lane drags while on) and an eye that
+bypasses or enables every component (`timeline.components.bypassAll`); bars are styled like
+clips (name band, kind badge, selection border, dimmed when bypassed). A bar whose component
+follows its clip is dragged and trimmed on the lane like a clip — same snapping, same ghost on
+its track, `timeline.move` / `timeline.trim` on release; its edges register as
+`timeline.components.N.in` / `.out`. Clicking a bar selects the clip and opens the component's
+tool. On the lane, the ON/OFF switch in the header bypasses or enables every component
+(`timeline.components.bypassAll`) and the context menu does it per component (*Bypass Component*
+/ *Enable Component*); bypassed bars are dimmed and labelled.
 
 The Timeline shows them on a fixed **RE lane** above the caption tracks and the video tracks
 (`crates/ui-egui/src/panels/timeline_components.rs`), visible while the sequence has components

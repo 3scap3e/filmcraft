@@ -84,6 +84,7 @@ fn categories_follow_premiere_order() {
             "labels",
             "media",
             "mediaAnalysis",
+            "generate",
             "mediaCache",
             "memory",
             "playback",

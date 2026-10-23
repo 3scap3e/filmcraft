@@ -22,6 +22,26 @@ macro_rules! uic {
 }
 
 pub const UI_COMMANDS: &[UiCommand] = &[
+    uic!("generatePanel.run", "Generate Clip from Panel", [], None),
+    uic!("generatePanel.cancel", "Cancel Panel Generation", [], None),
+    uic!("generatePanel.chooseImage", "Choose Generation Image", [], None),
+    uic!("generatePanel.clearImage", "Clear Generation Image", [], None),
+    uic!("generatePanel.settings", "Open Generate Settings", [], None),
+    uic!("reverseEngineering.runLook", "Analyze Look", [], None),
+    uic!("reverseEngineering.cancelLook", "Cancel Look Analysis", [], None),
+    uic!("reverseEngineering.setLookOptions", "Set Look Options", [], None),
+    uic!("reverseEngineering.lookShot", "Select Look Shot", [], None),
+    uic!("reverseEngineering.exportLook", "Export Look File", [], None),
+    uic!("reverseEngineering.applyLook", "Apply Look to Clips", [], None),
+    uic!("reverseEngineering.chooseLookFile", "Choose Look File", [], None),
+    uic!("reverseEngineering.copyLookDescription", "Copy Look Description", [], None),
+    uic!("reverseEngineering.runSound", "Analyze Sound", [], None),
+    uic!("reverseEngineering.cancelSound", "Cancel Sound Analysis", [], None),
+    uic!("reverseEngineering.setSoundOptions", "Set Sound Options", [], None),
+    uic!("reverseEngineering.soundShot", "Select Sound Shot", [], None),
+    uic!("reverseEngineering.exportSound", "Export Sound File", [], None),
+    uic!("reverseEngineering.copySoundDescription", "Copy Sound Description", [], None),
+    uic!("reverseEngineering.soundBeatMarkers", "Add Beat Markers", [], None),
     uic!("reverseEngineering.analyzeMotion", "Analyze Range Motion", [], None),
     uic!("reverseEngineering.cancelMotion", "Cancel Motion Analysis", [], None),
     uic!("reverseEngineering.motionPair", "Inspect Motion Frame", [], None),
@@ -77,6 +97,7 @@ pub const UI_COMMANDS: &[UiCommand] = &[
     uic!("reverseEngineering.exportCamera", "Export 2D Camera", [], None),
     uic!("reverseEngineering.applyCamera", "Apply 2D Camera to Clips", [], None),
     uic!("reverseEngineering.exportComponent", "Export Applied Component as Camera File", [], None),
+    uic!("reverseEngineering.copyDescription", "Copy Camera Description", [], None),
     uic!("reverseEngineering.setRange", "Set Video Range", [], None),
     uic!("reverseEngineering.playRange", "Replay Selected Video Range", [], None),
     uic!("reverseEngineering.markStart", "Set Range Start at Playhead", [], None),
@@ -287,6 +308,9 @@ pub fn invoke(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut params:
     }
     if id.starts_with("reverseEngineering.") {
         return crate::panels::reverse_engineering::command(app, ctx, id, &params);
+    }
+    if id.starts_with("generatePanel.") {
+        return crate::panels::generate::command(app, ctx, id, &params);
     }
     if id == "file.exportFrame" {
         if params.get("target").is_none() {

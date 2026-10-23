@@ -1,0 +1,45 @@
+[package]
+name = "filmcraft-generate"
+description = "FilmCraft video generation: the VideoGenerator trait, generation requests and results, and the Reactor FastH3 client (HTTP coordinator, WebRTC data channels, HLS clip download)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[features]
+default = []
+# The Reactor client: HTTPS (rustls + RustCrypto, OS certificate verification), WebRTC data
+# channels (webrtc-rs over tokio; its DTLS uses `ring`) and protobuf (prost). Off by default and
+# in wasm builds.
+reactor = [
+    "dep:ureq",
+    "dep:rustls",
+    "dep:rustls-rustcrypto",
+    "dep:webrtc",
+    "dep:rtc",
+    "dep:tokio",
+    "dep:prost",
+    "dep:prost-types",
+    "dep:async-trait",
+    "dep:bytes",
+]
+
+[dependencies]
+filmcraft-time = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+log = { workspace = true }
+ureq = { version = "3", default-features = false, features = ["rustls-no-provider", "platform-verifier", "json"], optional = true }
+rustls = { version = "0.23", default-features = false, optional = true }
+rustls-rustcrypto = { version = "0.0.2-alpha", optional = true }
+webrtc = { version = "0.21", optional = true }
+rtc = { version = "0.21", default-features = false, optional = true }
+tokio = { version = "1", default-features = false, features = ["rt-multi-thread", "time", "sync", "macros"], optional = true }
+prost = { version = "0.14", optional = true }
+prost-types = { version = "0.14", optional = true }
+async-trait = { version = "0.1", optional = true }
+bytes = { version = "1", optional = true }

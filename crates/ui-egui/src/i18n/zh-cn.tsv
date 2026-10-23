@@ -1216,6 +1216,14 @@
 	Head and Tail	首尾帧
 	Continuous	连续
 	Show Audio Waveform	显示音频波形
+	Show RE Components Lane	显示 RE 组件轨道
+	Components	组件
+	Remove Component	移除组件
+	Export Camera File…	导出摄像机文件…
+	Select Clip	选择剪辑
+	Bypass Component	旁通组件
+	Enable Component	启用组件
+	Copy Camera Description	复制摄像机描述
 	Expand All Tracks	展开所有轨道
 	Minimize All Tracks	最小化所有轨道
 	Unrendered: should play back in real time	未渲染：应能实时播放
@@ -3540,3 +3548,66 @@
 	Delete Caption Track	删除字幕轨道
 	Delete Caption Tracks	删除多个字幕轨道
 	Delete Empty Caption Tracks	删除空字幕轨道
+
+# Generate panel (AI video clips)
+	Not ready	未就绪
+	Open Settings…	打开首选项…
+	Prompt	提示词
+	Describe the whole shot: style, subjects, action, camera, light and sound	描述整个镜头：风格、主体、动作、镜头运动、光线和声音
+	The model snaps the length to the nearest one it can produce.	模型会把时长对齐到它能生成的最接近值。
+	Image (optional)	图像（可选）
+	The image is fitted to the model's canvas; it is a frame target, not a style reference.	图像会适配到模型的画布；它是目标帧，不是风格参考。
+	Choose image…	选择图像…
+	Place	放置
+	At the playhead	在播放头处
+	At	在
+	Track	轨道
+	Insert (ripple)	插入（波纹）
+	Estimated cost ≈ ${cost} (the session is billed per second, about twice the clip's length)	预计费用 ≈ ${cost}（会话按秒计费，约为剪辑时长的两倍）
+	Generating…	正在生成…
+	Generate clip	生成剪辑
+	Open a sequence to place the clip	打开一个序列以放置剪辑
+	Clip generated and placed on the timeline	剪辑已生成并放到时间轴上
+	Generation failed: {e}	生成失败：{e}
+	Generating the clip…	正在生成剪辑…
+	Paste the key here	在此粘贴密钥
+	Reactor (FastH3)	Reactor（FastH3）
+	API key	API 密钥
+	Default clip length	默认剪辑时长
+	Insert at the position (ripple) instead of overwriting	在该位置插入（波纹）而不是覆盖
+	Generate video clips with an AI model straight onto the timeline (Window ▸ Generate). The API key stays in your preferences and is sent only to the provider.	用 AI 模型直接在时间轴上生成视频剪辑（窗口 ▸ 生成）。API 密钥保存在你的首选项中，只会发送给服务提供方。
+	Keys come from reactor.inc ▸ Account ▸ API keys. A session is billed per second while the clip builds and plays back (about $0.0125 per second, roughly twice the clip's length).	密钥来自 reactor.inc ▸ Account ▸ API keys。剪辑生成和回放期间按秒计费（约每秒 0.0125 美元，大约是剪辑时长的两倍）。
+	List Video Generators	列出视频生成器
+	Generate Video	生成视频
+	Video Generation Status	视频生成状态
+	Cancel Video Generation	取消视频生成
+	Inspect Generated Clip	检查生成的剪辑
+	Generate Clip from Panel	从面板生成剪辑
+	Cancel Panel Generation	取消面板中的生成
+	Choose Generation Image	选择生成用图像
+	Clear Generation Image	清除生成用图像
+	Open Generate Settings	打开生成首选项
+	First frame only	仅首帧
+	Last frame only	仅末帧
+	First and last frame	首帧和末帧
+	no API key: set one in Settings ▸ Generate	没有 API 密钥：请在首选项 ▸ 生成中设置
+	not available in this build (built without the `reactor` feature)	此版本不可用（编译时未启用 `reactor` 特性）
+
+# Reverse Engineering: Look tool
+	Analyze Look	分析画面风格
+	Cancel Look Analysis	取消画面风格分析
+	Set Look Options	设置画面风格选项
+	Select Look Shot	选择画面风格镜头
+	Export Look File	导出画面风格文件
+	Apply Look to Clips	将画面风格应用到剪辑
+	Choose Look File	选择画面风格文件
+	Copy Look Description	复制画面风格描述
+
+# Reverse Engineering: Sound tool
+	Analyze Sound	分析声音
+	Cancel Sound Analysis	取消声音分析
+	Set Sound Options	设置声音选项
+	Select Sound Shot	选择声音镜头
+	Export Sound File	导出声音文件
+	Copy Sound Description	复制声音描述
+	Add Beat Markers	添加节拍标记

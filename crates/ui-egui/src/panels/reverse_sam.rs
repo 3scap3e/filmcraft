@@ -109,6 +109,8 @@ pub(super) fn command(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, par
         || super::reverse_tools::is_running(ctx)
         || super::reverse_tracking::is_running(ctx)
         || super::reverse_shots::is_running(ctx)
+        || super::reverse_look::is_running(ctx)
+        || super::reverse_sound::is_running(ctx)
         || super::reverse_camera2d::is_running(ctx)
     {
         return Err("Cancel the running analysis before changing masks".into());

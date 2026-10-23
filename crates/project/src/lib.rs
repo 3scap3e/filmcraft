@@ -14,6 +14,7 @@ pub mod component;
 pub mod effect;
 pub mod essential;
 pub mod find;
+pub mod generation;
 pub mod graphic;
 pub mod graphic_design;
 pub mod gtemplate;
@@ -37,6 +38,7 @@ pub use component::{AppliedComponent, ChangeKind, ComponentId, ComponentKind, Co
 pub use effect::{EffectDef, EffectInstance, EffectKind, ParamDef, ParamKind, effect_defs, find_effect};
 pub use essential::{AudioType, EssentialSound};
 pub use find::{FindOp, FindQuery, FindRow, SearchBin};
+pub use generation::Generation;
 pub use graphic_design::{CharStyle, GraphicMeta, LayerExtra, Pin, PinTarget, Roll, RollMode, SourceGraphic, StyleRun};
 pub use keyframe::{Interpolation, Keyframe, Param, ParamValue};
 pub use mask::{Mask, MaskMode, MaskPath, MaskVertex, TrackMethod};
@@ -1270,6 +1272,10 @@ pub struct Project {
     /// instructions for whoever opens it next, frame numbers and the like. Schema v15.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub notes: String,
+    /// Generations (Generate panel): the prompt, length, seed and provider each AI-generated MP4
+    /// item was made with, keyed by that item. Schema v16.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub generations: BTreeMap<ItemId, Generation>,
 }
 
 /// How a sequence is shown in the Timeline panel: its zoom, scroll position and track heights.
@@ -1366,6 +1372,7 @@ impl Project {
             source_graphics: BTreeMap::new(),
             narrations: BTreeMap::new(),
             notes: String::new(),
+            generations: BTreeMap::new(),
         }
     }
 

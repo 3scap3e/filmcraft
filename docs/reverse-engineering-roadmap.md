@@ -31,10 +31,11 @@ as the reference case.
    permissively licensed OCR model in its own process; pixel fonts need a model tolerant of
    low resolution) plus Rust-side box tracking, per-shot deduplication and the `notes` field the
    brief already has.
-3. **Audio breakdown.** FilmCraft already has a Whisper transcriber (`crates/speech`) and audio
-   analysis; the brief needs per-shot dialogue, loudness curve, music/speech/effects segmentation,
-   beat positions and whether cuts land on beats. This is the cheapest high-value step because
-   the crates exist.
+3. **Audio breakdown.** Done as the [Sound](reverse-engineering-sound.md) tool: BS.1770
+   loudness, speech / music / effects / ambience / silence segments under named rules, tempo and
+   beats with cuts-on-beats, dialogue lines per shot through the Whisper transcriber, and the
+   sound travels into the AI brief per shot and for the whole range. Still missing: stems
+   (separating voice from music), key and chords.
 4. **Depth and camera pose.** For live-action material the 2D similarity is not enough. A local
    runtime for a monocular geometry model (Depth Anything 3, VGGT, MegaSaM or ViPE; check each
    licence and whether weights are permissive) would give per-frame depth, intrinsics and camera
@@ -46,9 +47,11 @@ as the reference case.
    keyframe, constrained by the measured facts (palette, camera, objects), so the prompt scaffold
    becomes a sentence instead of a list. Must be clearly separated from measurements in the
    output, as the brief does today with its limitations section.
-7. **Look transfer, not just description.** Fit a 3D LUT between a neutral reference and the
-   graded keyframe, export `.cube`, and estimate grain, vignette, bloom and halation strength so
-   the look can be reapplied rather than re-prompted.
+7. **Look transfer, not just description.** Done in part: the [Look](reverse-engineering-look.md)
+   tool measures tone, palette, vignette, grain and sharpness per shot, names them under explicit
+   rules and applies them as Lumetri Color parameters recorded as a component. Still missing: a
+   fitted 3D LUT (`.cube`) between a neutral reference and the graded keyframe, and bloom /
+   halation strength.
 8. **Typography and layout.** Font class (pixel, serif, sans, mono), size in frame fractions,
    position, animation (typewriter, fade) for every text block from the OCR step.
 9. **Transitions.** Dissolves, wipes, fades and speed ramps are not detected (only hard cuts and

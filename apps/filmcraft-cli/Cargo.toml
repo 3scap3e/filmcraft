@@ -16,6 +16,8 @@ path = "src/main.rs"
 default = []
 # Speech-to-text (Text panel ▸ Transcribe) with Whisper on the CPU, and model downloads.
 whisper = ["filmcraft-engine/whisper", "filmcraft-engine/speech-download"]
+# `generate.video` with Reactor's FastH3 model (HTTPS + WebRTC data channels).
+reactor = ["filmcraft-engine/reactor"]
 
 [dependencies]
 filmcraft-engine = { workspace = true }

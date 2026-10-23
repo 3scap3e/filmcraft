@@ -1228,6 +1228,14 @@
 	Head and Tail	Cabeza y cola
 	Continuous	Continuas
 	Show Audio Waveform	Mostrar forma de onda de audio
+	Show RE Components Lane	Mostrar pista de componentes RE
+	Components	Componentes
+	Remove Component	Quitar componente
+	Export Camera File…	Exportar archivo de cámara…
+	Select Clip	Seleccionar clip
+	Bypass Component	Omitir componente
+	Enable Component	Activar componente
+	Copy Camera Description	Copiar descripción de cámara
 	Expand All Tracks	Expandir todas las pistas
 	Minimize All Tracks	Minimizar todas las pistas
 	Unrendered: should play back in real time	Sin procesar: debería reproducirse en tiempo real
@@ -3562,3 +3570,66 @@
 	Edit Project Notes	Editar notas del proyecto
 	Notes for this project: to-dos, instructions, frame numbers… Saved with the project.	Notas de este proyecto: tareas pendientes, instrucciones, números de fotograma… Se guardan con el proyecto.
 	Use Effect Shutter Angle	Usar el ángulo de obturación del efecto
+
+# Generate panel (AI video clips)
+	Not ready	No lista
+	Open Settings…	Abrir preferencias…
+	Prompt	Indicación
+	Describe the whole shot: style, subjects, action, camera, light and sound	Describe el plano completo: estilo, sujetos, acción, cámara, luz y sonido
+	The model snaps the length to the nearest one it can produce.	El modelo ajusta la duración a la más cercana que puede producir.
+	Image (optional)	Imagen (opcional)
+	The image is fitted to the model's canvas; it is a frame target, not a style reference.	La imagen se ajusta al lienzo del modelo; es un fotograma objetivo, no una referencia de estilo.
+	Choose image…	Elegir imagen…
+	Place	Colocar
+	At the playhead	En el cabezal
+	At	En
+	Track	Pista
+	Insert (ripple)	Insertar (con desplazamiento)
+	Estimated cost ≈ ${cost} (the session is billed per second, about twice the clip's length)	Coste estimado ≈ ${cost} (la sesión se factura por segundo, cerca del doble de la duración del clip)
+	Generating…	Generando…
+	Generate clip	Generar clip
+	Open a sequence to place the clip	Abre una secuencia para colocar el clip
+	Clip generated and placed on the timeline	Clip generado y colocado en la línea de tiempo
+	Generation failed: {e}	La generación falló: {e}
+	Generating the clip…	Generando el clip…
+	Paste the key here	Pega la clave aquí
+	Reactor (FastH3)	Reactor (FastH3)
+	API key	Clave de API
+	Default clip length	Duración de clip predeterminada
+	Insert at the position (ripple) instead of overwriting	Insertar en la posición (con desplazamiento) en lugar de sobrescribir
+	Generate video clips with an AI model straight onto the timeline (Window ▸ Generate). The API key stays in your preferences and is sent only to the provider.	Genera clips de vídeo con un modelo de IA directamente en la línea de tiempo (Ventana ▸ Generar). La clave de API se guarda en tus preferencias y solo se envía al proveedor.
+	Keys come from reactor.inc ▸ Account ▸ API keys. A session is billed per second while the clip builds and plays back (about $0.0125 per second, roughly twice the clip's length).	Las claves se obtienen en reactor.inc ▸ Account ▸ API keys. La sesión se factura por segundo mientras el clip se genera y se reproduce (unos 0,0125 $ por segundo, cerca del doble de la duración del clip).
+	List Video Generators	Listar generadores de vídeo
+	Generate Video	Generar vídeo
+	Video Generation Status	Estado de la generación de vídeo
+	Cancel Video Generation	Cancelar la generación de vídeo
+	Inspect Generated Clip	Inspeccionar clip generado
+	Generate Clip from Panel	Generar clip desde el panel
+	Cancel Panel Generation	Cancelar la generación del panel
+	Choose Generation Image	Elegir imagen de generación
+	Clear Generation Image	Quitar imagen de generación
+	Open Generate Settings	Abrir preferencias de Generar
+	First frame only	Solo primer fotograma
+	Last frame only	Solo último fotograma
+	First and last frame	Primer y último fotograma
+	no API key: set one in Settings ▸ Generate	sin clave de API: configúrala en Preferencias ▸ Generar
+	not available in this build (built without the `reactor` feature)	no disponible en esta compilación (sin la característica `reactor`)
+
+# Reverse Engineering: Look tool
+	Analyze Look	Analizar look
+	Cancel Look Analysis	Cancelar análisis del look
+	Set Look Options	Opciones del look
+	Select Look Shot	Seleccionar plano del look
+	Export Look File	Exportar archivo de look
+	Apply Look to Clips	Aplicar look a los clips
+	Choose Look File	Elegir archivo de look
+	Copy Look Description	Copiar descripción del look
+
+# Reverse Engineering: Sound tool
+	Analyze Sound	Analizar sonido
+	Cancel Sound Analysis	Cancelar análisis del sonido
+	Set Sound Options	Opciones del sonido
+	Select Sound Shot	Seleccionar plano del sonido
+	Export Sound File	Exportar archivo de sonido
+	Copy Sound Description	Copiar descripción del sonido
+	Add Beat Markers	Añadir marcadores de pulso

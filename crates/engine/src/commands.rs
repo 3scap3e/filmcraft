@@ -2469,10 +2469,18 @@ fn build() -> Vec<CommandSpec> {
             let clip = clip_p(p, "clip");
             let n = if let Some(c) = clip {
                 let clips = with_links(s, &[c]);
-                s.edit_sequence("Razor", |q, ctx, _| Ok(edit::razor_items(q, &clips, t, ctx)))?
+                s.edit_sequence("Razor", |q, ctx, _| {
+                    let new_ids = edit::razor_items(q, &clips, t, ctx);
+                    crate::components::follow_split(q, &new_ids, ctx);
+                    Ok(new_ids)
+                })?
             } else {
                 let tracks: Vec<TrackId> = tr.into_iter().collect();
-                s.edit_sequence("Razor", |q, ctx, _| Ok(edit::razor(q, &tracks, t, ctx)))?
+                s.edit_sequence("Razor", |q, ctx, _| {
+                    let new_ids = edit::razor(q, &tracks, t, ctx);
+                    crate::components::follow_split(q, &new_ids, ctx);
+                    Ok(new_ids)
+                })?
             };
             Ok(json!({"cuts": n.len()}))
         }),
@@ -2969,6 +2977,7 @@ fn build() -> Vec<CommandSpec> {
     v.extend(crate::remix::commands());
     v.extend(crate::voiceover::commands());
     v.extend(crate::narration::commands());
+    v.extend(crate::generate::commands());
     v.extend(crate::keyboard::commands());
     v.extend(crate::project_panel::commands());
     v.extend(crate::media_browser::commands());

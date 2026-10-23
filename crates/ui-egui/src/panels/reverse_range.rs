@@ -37,6 +37,8 @@ pub(super) fn confirm(app: &mut FilmcraftApp, ctx: &egui::Context, params: &Valu
         || super::reverse_tools::is_running(ctx)
         || (super::reverse_tracking::is_running(ctx) || super::reverse_sam::is_running(ctx))
         || super::reverse_shots::is_running(ctx)
+        || super::reverse_look::is_running(ctx)
+        || super::reverse_sound::is_running(ctx)
         || super::reverse_camera2d::is_running(ctx)
     {
         return Err("Cancel analysis before accepting a new range".into());

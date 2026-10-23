@@ -12,6 +12,7 @@ pub mod events;
 pub mod export_mode;
 pub mod file_dialogs;
 pub mod frame_export;
+pub mod generate;
 pub mod graphics;
 pub mod graphics_templates;
 pub mod import_mode;
@@ -39,9 +40,11 @@ pub mod reference;
 pub mod remix;
 pub mod reverse_engineering;
 pub(crate) mod reverse_local;
+pub(crate) mod reverse_look;
 pub(crate) mod reverse_motion;
 pub(crate) mod reverse_range;
 pub(crate) mod reverse_regions;
+pub(crate) mod reverse_sound;
 pub(crate) mod reverse_tools;
 pub(crate) mod reverse_tracking;
 pub mod scopes;
@@ -112,6 +115,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, p: PanelKind, rect: Rect)
         PanelKind::TextToSpeech => tts::show(app, ui, rect),
         PanelKind::ProjectNotes => notes::show(app, ui, rect),
         PanelKind::ReverseEngineering => reverse_engineering::show(app, ui, rect),
+        PanelKind::Generate => generate::show(app, ui, rect),
         other => crate::dock::placeholder(ui, rect, &app.tokens, &tlf!("{panel} — coming in a later milestone", panel = crate::i18n::t(other.title()))),
     }
 }

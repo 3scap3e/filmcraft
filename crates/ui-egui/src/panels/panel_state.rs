@@ -245,6 +245,8 @@ pub struct ReverseEngineeringState {
     pub motion: Option<super::reverse_motion::MotionReport>,
     pub active_tool: String,
     pub focused_component: Option<u64>,
+    pub details_open: bool,
+    pub advanced_open: bool,
     pub global_motion: Option<super::reverse_tools::GlobalReport>,
     pub local_motion: Option<super::reverse_local::LocalReport>,
     pub local_show_raw: bool,
@@ -288,6 +290,28 @@ pub struct ReverseEngineeringState {
     pub camera2d_camera: filmcraft_vision::camera2d::CameraOptions,
     pub camera2d_anchors: super::reverse_camera2d::AnchorOptions,
     pub camera2d_view: String,
+    #[serde(default)]
+    pub look_report: Option<super::reverse_look::LookReport>,
+    #[serde(default)]
+    pub look_selected: usize,
+    #[serde(default = "default_look_palette")]
+    pub look_palette_size: usize,
+    #[serde(default = "default_look_samples")]
+    pub look_max_samples: usize,
+    #[serde(default)]
+    pub sound_report: Option<super::reverse_sound::SoundReport>,
+    #[serde(default)]
+    pub sound_selected: usize,
+    #[serde(default)]
+    pub sound_options: super::reverse_sound::SoundOptions,
+}
+
+fn default_look_palette() -> usize {
+    6
+}
+
+fn default_look_samples() -> usize {
+    60
 }
 
 fn default_sample_interval() -> i64 {
@@ -317,6 +341,8 @@ impl Default for ReverseEngineeringState {
             motion: None,
             active_tool: "menu".into(),
             focused_component: None,
+            details_open: false,
+            advanced_open: false,
             global_motion: None,
             local_motion: None,
             local_show_raw: false,
@@ -360,6 +386,13 @@ impl Default for ReverseEngineeringState {
             camera2d_camera: Default::default(),
             camera2d_anchors: Default::default(),
             camera2d_view: "points".into(),
+            look_report: None,
+            look_selected: 0,
+            look_palette_size: 6,
+            look_max_samples: 60,
+            sound_report: None,
+            sound_selected: 0,
+            sound_options: Default::default(),
         }
     }
 }

@@ -138,10 +138,13 @@ SAM 2.1 is an independent optional model tool. See [setup, usage and mask export
 
 ## Components menu and 2D camera
 
-The tool menu lists the scene components to extract (2D camera, 3D camera, shots, look,
-dialogue, music, sound effects, script, figure and object movements, text and titles, effects
-and transitions), enabled as they are built, with the raw analysis layers under **Evidence**.
-The 2D camera is built step by step: [2D camera](reverse-engineering-camera2d.md).
+The tool menu lists the scene components to extract (2D camera, 3D camera, shots, look, sound,
+script, figure and object movements, text and titles, effects and transitions), enabled as they
+are built, with the raw analysis layers under **Evidence**.
+The 2D camera is built step by step: [2D camera](reverse-engineering-camera2d.md). The look of
+each shot as data, words and a reusable Lumetri grade: [Look](reverse-engineering-look.md). The
+mix per shot as loudness, speech / music / effects / ambience, tempo, beats on cuts and dialogue
+lines: [Sound](reverse-engineering-sound.md).
 
 ## Shots & look, camera moves, AI brief
 

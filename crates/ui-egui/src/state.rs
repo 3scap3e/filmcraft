@@ -197,6 +197,9 @@ pub struct TimelineView {
     /// The RE lane above the video tracks: reverse-engineering components applied to clips.
     #[serde(default = "yes")]
     pub show_components_lane: bool,
+    /// The RE lane's lock: while on, its components cannot be dragged or trimmed from the lane.
+    #[serde(default)]
+    pub components_locked: bool,
     /// Follow playhead during playback (page scroll).
     pub follow: bool,
     pub fit_pending: bool,
@@ -234,6 +237,7 @@ impl Default for TimelineView {
             thumbnail_mode: ThumbnailMode::Head,
             show_waveforms: true,
             show_components_lane: true,
+            components_locked: false,
             follow: true,
             fit_pending: true,
             fit_empty: None,
@@ -477,6 +481,9 @@ pub struct UiState {
     /// Text to Speech panel: the script and voice settings being written or edited.
     #[serde(default)]
     pub tts: crate::panels::tts::TtsDraft,
+    /// Generate panel: the prompt, length, image and placement being asked for.
+    #[serde(default)]
+    pub generate: crate::panels::generate::GenerateDraft,
     /// Export mode: settings, preset, destination, range, the Preset Manager and Quick Export.
     #[serde(default)]
     pub export: crate::panels::export_mode::ExportUi,
@@ -974,6 +981,7 @@ impl Default for UiState {
             keyframe_selection: Vec::new(),
             essential_sound_tab: "Edit".into(),
             tts: Default::default(),
+            generate: Default::default(),
             export: Default::default(),
             text_tab: captions_tab(),
             caption_search: String::new(),

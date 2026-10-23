@@ -27,6 +27,9 @@ filmcraft-export = { workspace = true }
 filmcraft-gpu = { workspace = true }
 filmcraft-scopes = { workspace = true }
 filmcraft-vision = { workspace = true }
+filmcraft-sound = { workspace = true }
+filmcraft-speech = { workspace = true }
+filmcraft-generate = { workspace = true }
 egui = { workspace = true }
 eframe = { workspace = true, features = ["default_fonts", "wgpu", "accesskit"] }
 serde = { workspace = true }

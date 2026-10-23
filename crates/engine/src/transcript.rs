@@ -144,6 +144,26 @@ fn transcriber(s: &Session, p: &Value) -> Result<Arc<dyn Transcriber>> {
     filmcraft_speech::load(&dir, model).map_err(speech_err)
 }
 
+/// The transcriber other features (the Reverse Engineering sound tool) use for dialogue: the
+/// installed one, else the catalogue model named by `model` or by the preferences.
+pub fn speech_transcriber(s: &Session, model: Option<&str>) -> Result<Arc<dyn Transcriber>> {
+    let p = match model {
+        Some(m) => json!({"model": m}),
+        None => json!({}),
+    };
+    transcriber(s, &p)
+}
+
+/// The transcription options the preferences ask for (language, speaker labelling).
+pub fn speech_options(s: &Session) -> Options {
+    let ma = &s.prefs.media_analysis;
+    Options {
+        language: if ma.language_auto_detect { None } else { Some(ma.default_language.clone()) },
+        diarize: ma.speaker_labeling != "off",
+        max_speakers: Options::default().max_speakers,
+    }
+}
+
 fn generate(s: &mut Session, p: &Value) -> Result<Value> {
     let items = targets(s, p);
     if items.is_empty() {

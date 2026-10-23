@@ -49,6 +49,14 @@ fn job_id() -> egui::Id {
 pub(super) fn is_running(ctx: &egui::Context) -> bool {
     ctx.data(|d| d.get_temp::<Job>(job_id())).is_some()
 }
+pub(super) fn progress(ctx: &egui::Context) -> Option<(usize, usize, usize)> {
+    ctx.data(|d| d.get_temp::<Job>(job_id())).map(|job| (job.stage.load(Ordering::Relaxed), job.progress.load(Ordering::Relaxed), job.total))
+}
+pub(super) fn cancel(ctx: &egui::Context) {
+    if let Some(job) = ctx.data(|d| d.get_temp::<Job>(job_id())) {
+        job.cancel.store(true, Ordering::Relaxed);
+    }
+}
 pub(super) fn current(app: &FilmcraftApp) -> bool {
     let s = &app.ui.panels.reverse_engineering;
     s.shots.as_ref().is_some_and(|r| {
@@ -110,7 +118,7 @@ fn select(app: &mut FilmcraftApp, ctx: &egui::Context, index: usize) -> Result<V
     reverse_engineering::reset_decode_timer(ctx);
     Ok(json!({"index":index,"startFrame":start_frame,"endFrame":end_frame}))
 }
-fn start(app: &mut FilmcraftApp, ctx: &egui::Context, base: Option<ShotReport>) -> Result<Value, String> {
+pub(super) fn start(app: &mut FilmcraftApp, ctx: &egui::Context, base: Option<ShotReport>) -> Result<Value, String> {
     if is_running(ctx) {
         return Err("Shot detection is already running".into());
     }
@@ -242,9 +250,7 @@ fn start(app: &mut FilmcraftApp, ctx: &egui::Context, base: Option<ShotReport>) 
 }
 pub(super) fn command(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, params: &Value) -> Result<Value, String> {
     if id == "reverseEngineering.cancelShots" {
-        if let Some(job) = ctx.data(|d| d.get_temp::<Job>(job_id())) {
-            job.cancel.store(true, Ordering::Relaxed);
-        }
+        cancel(ctx);
         return Ok(json!({"cancelled":true}));
     }
     if is_running(ctx) {
@@ -274,6 +280,15 @@ pub(super) fn command(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, par
             },
             black_luma: number("blackLuma", s.shot_options.black_luma)?,
             duplicate_tolerance: number("duplicateTolerance", s.shot_options.duplicate_tolerance)?,
+            dissolve_shift: number("dissolveShift", s.shot_options.dissolve_shift)?,
+            dissolve_min_frames: match params.get("dissolveMinFrames") {
+                Some(v) => v.as_u64().and_then(|v| usize::try_from(v).ok()).ok_or("dissolveMinFrames must be an integer")?,
+                None => s.shot_options.dissolve_min_frames,
+            },
+            dissolve_max_frames: match params.get("dissolveMaxFrames") {
+                Some(v) => v.as_u64().and_then(|v| usize::try_from(v).ok()).ok_or("dissolveMaxFrames must be an integer")?,
+                None => s.shot_options.dissolve_max_frames,
+            },
         };
         options.validate()?;
         let palette_size = match params.get("paletteSize") {
@@ -363,12 +378,41 @@ pub(super) fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui) {
         app.auto.add("reverseEngineering.shots.paletteSize", r.rect, "Colours in each shot palette");
         changed |= r.changed();
     });
+    ui.horizontal_wrapped(|ui| {
+        ui.label("Dissolve shift");
+        let r = ui.add(egui::DragValue::new(&mut options.dissolve_shift).range(0.01..=3.0).speed(0.01));
+        app.auto.add(
+            "reverseEngineering.shots.dissolveShift",
+            r.rect,
+            "How far tone, warmth and saturation must travel across a gradual transition to count as a dissolve",
+        );
+        changed |= r.changed();
+        ui.label("over");
+        let r = ui.add(egui::DragValue::new(&mut options.dissolve_min_frames).range(2..=1000));
+        app.auto.add("reverseEngineering.shots.dissolveMinFrames", r.rect, "Shortest dissolve, in frames");
+        changed |= r.changed();
+        ui.label("–");
+        let r = ui.add(egui::DragValue::new(&mut options.dissolve_max_frames).range(2..=1000));
+        app.auto.add("reverseEngineering.shots.dissolveMaxFrames", r.rect, "Longest dissolve, in frames");
+        changed |= r.changed();
+        ui.label("frames");
+    });
     if changed {
         invoke(
             app,
             ui.ctx(),
             "reverseEngineering.setShotOptions",
-            json!({"cutThreshold":options.cut_threshold,"adaptiveRatio":options.adaptive_ratio,"minShotFrames":options.min_shot_frames,"blackLuma":options.black_luma,"duplicateTolerance":options.duplicate_tolerance,"paletteSize":palette}),
+            json!({
+                "cutThreshold":options.cut_threshold,
+                "adaptiveRatio":options.adaptive_ratio,
+                "minShotFrames":options.min_shot_frames,
+                "blackLuma":options.black_luma,
+                "duplicateTolerance":options.duplicate_tolerance,
+                "dissolveShift":options.dissolve_shift,
+                "dissolveMinFrames":options.dissolve_min_frames,
+                "dissolveMaxFrames":options.dissolve_max_frames.max(options.dissolve_min_frames),
+                "paletteSize":palette
+            }),
         );
     }
     let is_current = current(app);
@@ -411,6 +455,13 @@ pub(super) fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui) {
         format!("{:?}", shot.boundary).to_lowercase(),
         shot.boundary_score.map(|s| format!(" · change {s:.2}")).unwrap_or_default()
     ));
+    if shot.transition_frames > 0 {
+        ui.label(format!(
+            "Gradual transition of about {} frames ({:.2} s), centred on the boundary: a cross dissolve, wipe or fade through colour.",
+            shot.transition_frames,
+            shot.transition_frames as f64 / frame_rate(&report).max(0.001)
+        ));
+    }
     if shot.black {
         ui.label("Black frames: fade, gap or slate.");
     } else if shot.frame_count > 1 {

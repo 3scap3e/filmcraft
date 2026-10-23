@@ -41,10 +41,11 @@ pub enum PanelKind {
     Timecode,
     ProjectNotes,
     ReverseEngineering,
+    Generate,
 }
 
 impl PanelKind {
-    pub const ALL: [PanelKind; 29] = [
+    pub const ALL: [PanelKind; 30] = [
         PanelKind::Project,
         PanelKind::MediaBrowser,
         PanelKind::Libraries,
@@ -74,6 +75,7 @@ impl PanelKind {
         PanelKind::Timecode,
         PanelKind::ProjectNotes,
         PanelKind::ReverseEngineering,
+        PanelKind::Generate,
     ];
     pub fn title(self) -> &'static str {
         match self {
@@ -106,6 +108,7 @@ impl PanelKind {
             PanelKind::Timecode => "Timecode",
             PanelKind::ProjectNotes => "Project Notes",
             PanelKind::ReverseEngineering => "Reverse Engineering",
+            PanelKind::Generate => "Generate",
         }
     }
     pub fn id(self) -> String {
@@ -407,13 +410,17 @@ pub fn workspace(name: &str) -> DockNode {
             Ratio(0.57),
             hsplit(
                 FixedB(450.0),
-                hsplit(Ratio(0.5), tabs(&[Source, EffectControls, AudioClipMixer, Metadata, ReverseEngineering], 4), tabs(&[Program], 0)),
+                hsplit(Ratio(0.5), tabs(&[Source, EffectControls, AudioClipMixer, Metadata], 0), tabs(&[Program], 0)),
                 tabs(&[Properties, EssentialGraphics, Text], 0),
             ),
             hsplit(
                 Ratio(0.29),
                 tabs(&[Project, MediaBrowser, Libraries, Info, Effects, Markers, History], 0),
-                hsplit(FixedA(64.0), tabs(&[Tools], 0), hsplit(FixedB(116.0), tabs(&[Timeline], 0), tabs(&[AudioMeters], 0))),
+                hsplit(
+                    FixedA(64.0),
+                    tabs(&[Tools], 0),
+                    hsplit(FixedB(116.0), hsplit(Ratio(0.6), tabs(&[Timeline], 0), tabs(&[ReverseEngineering], 0)), tabs(&[AudioMeters], 0)),
+                ),
             ),
         ),
     }

@@ -342,7 +342,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     // the RE components lane, then the caption tracks, sit in their own areas above the video tracks
     let comp_n = usize::from(app.ui.timeline.show_components_lane && !seq.components.is_empty());
     let components_area =
-        Rect::from_min_max(pos2(rect.min.x, content.min.y), pos2(content.max.x, content.min.y + comp_n as f32 * super::timeline_components::ROW_H));
+        Rect::from_min_max(pos2(rect.min.x, content.min.y), pos2(content.max.x, content.min.y + comp_n as f32 * app.ui.timeline.video_track_h));
     let comp_h = if comp_n > 0 { components_area.height() + DIVIDER_H } else { 0.0 };
     let cap_n = seq.caption_tracks.len();
     let caption_area = Rect::from_min_max(
@@ -664,7 +664,7 @@ fn paint_through_edit(p: &egui::Painter, x: f32, row: Rect) -> Rect {
     Rect::from_center_size(pos2(x, cy), vec2(2.0 * w + 2.0, 2.0 * h + 2.0))
 }
 
-fn lighten(c: Color32, f: f32) -> Color32 {
+pub(super) fn lighten(c: Color32, f: f32) -> Color32 {
     let l = |v: u8| (v as f32 + (255.0 - v as f32) * f).round() as u8;
     Color32::from_rgb(l(c.r()), l(c.g()), l(c.b()))
 }
@@ -1076,7 +1076,7 @@ fn draw_transition(p: &egui::Painter, r: Rect, trn: &filmcraft_project::Transiti
 }
 
 /// A Premiere track-header button (patch / target): highlight-blue fill when on, full track height.
-fn patch_button(ui: &mut egui::Ui, r: Rect, clip: Rect, label: &str, on: bool, show_off: bool, id: egui::Id, t: &Tokens) -> egui::Response {
+pub(super) fn patch_button(ui: &mut egui::Ui, r: Rect, clip: Rect, label: &str, on: bool, show_off: bool, id: egui::Id, t: &Tokens) -> egui::Response {
     let resp = ui.interact(r.intersect(clip), id, Sense::click());
     let p = ui.painter().with_clip_rect(clip);
     if on {
@@ -1573,7 +1573,7 @@ fn vertical_scrollbar(ui: &mut egui::Ui, bar: Rect, value: &mut f32, max: f32, i
 }
 
 /// Snap `t` to nearby candidates (edits, playhead, markers, in/out). Returns snapped tick.
-fn snap(app: &mut FilmcraftApp, seq: &Sequence, layout: &Layout, t: Tick, exclude: &[ClipId]) -> Tick {
+pub(super) fn snap(app: &mut FilmcraftApp, seq: &Sequence, layout: &Layout, t: Tick, exclude: &[ClipId]) -> Tick {
     snap_to(app, seq, layout, t, exclude, true)
 }
 

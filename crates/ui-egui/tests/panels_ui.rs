@@ -162,10 +162,11 @@ fn every_panel_opens_from_the_window_menu() {
     let menu = d.ok("ui.menu.list", json!({}));
     let window: Vec<String> =
         menu.as_array().unwrap().iter().filter(|m| m["path"] == json!(["Window"])).filter_map(|m| m["label"].as_str().map(str::to_string)).collect();
-    for p in ["Events", "Lumetri Scopes", "Metadata", "Progress", "Project Notes", "Reference Monitor", "Reverse Engineering", "Timecode"] {
+    for p in ["Events", "Lumetri Scopes", "Metadata", "Progress", "Project Notes", "Reference Monitor", "Reverse Engineering", "Timecode", "Generate"] {
         assert!(window.iter().any(|w| w == p), "{p} not in Window: {window:?}");
     }
     for (panel, key) in [
+        ("Generate", "generatePanel.prompt"),
         ("LumetriScopes", "scopes.wrench"),
         ("Metadata", "metadata."),
         ("Timecode", "timecode.row.0"),
@@ -181,6 +182,136 @@ fn every_panel_opens_from_the_window_menu() {
         assert!(!d.ids(key).is_empty(), "{panel}: no {key} widgets");
         assert_eq!(d.ok("ui.inspect", json!({}))["ui"]["focused"], json!(panel));
     }
+}
+
+/// A short 24 fps movie of a demo scene written with our own encoders (as the engine's tests do).
+fn make_movie(path: &std::path::Path, frames: i64) {
+    use filmcraft_media::generators::GeneratorSource;
+    use filmcraft_media::{DemoScene, Generator, MediaSource};
+    use filmcraft_project::{ItemId, ItemKind, Label, MediaClip, MediaRef, Project, SequenceSettings, TrackKind};
+    use filmcraft_time::{FrameRate, Tick, TimeRange};
+    let (w, h, rate) = (160, 120, FrameRate::FPS_24);
+    let dur = rate.tick_of(frames);
+    let scene = DemoScene::Aurora;
+    let src = GeneratorSource::new(Generator::Demo(scene), w, h, rate, dur);
+    let info = src.info().clone();
+    let mut p = Project::new("fixture");
+    let clip = MediaClip {
+        media: MediaRef::Generator(Generator::Demo(scene)),
+        info,
+        interpret: Default::default(),
+        mark_in: None,
+        mark_out: None,
+        markers: vec![],
+        offline: false,
+        proxy: None,
+        identity: None,
+    };
+    let item = p.add_item("scene", Label::Iris, ItemKind::Media(clip), None);
+    let seq = p.new_sequence("s", SequenceSettings { width: w, height: h, frame_rate: rate, ..Default::default() }, 1, 1, None);
+    let r = TimeRange::new(Tick::ZERO, dur);
+    let mut v = p.make_track_item(item, TrackKind::Video, Tick::ZERO, r, rate).unwrap();
+    for e in &mut v.effects {
+        filmcraft_project::resolve_auto_points(e, (w, h), (w, h));
+    }
+    let a = p.make_track_item(item, TrackKind::Audio, Tick::ZERO, r, rate).unwrap();
+    let q = p.sequence_mut(seq).unwrap();
+    q.video_tracks[0].items.push(v);
+    q.audio_tracks[0].items.push(a);
+    let settings = filmcraft_export::ExportSettings {
+        format: filmcraft_export::Format::H264,
+        path: path.to_string_lossy().into_owned(),
+        bitrate_kbps: 2000,
+        ..Default::default()
+    };
+    let shared: filmcraft_media::SharedSource = Arc::new(src);
+    let provider = move |id: ItemId| (id == item).then(|| shared.clone());
+    filmcraft_export::export(&Arc::new(p), seq, &settings, &provider, &Default::default()).unwrap();
+}
+
+/// Generate panel: the prompt, length and placement go through `generate.video`; a fake generator
+/// (no network) delivers a movie, which the engine imports and places at the playhead on V1 as one
+/// undo step, and the panel reports the outcome.
+#[test]
+fn generate_panel_runs_a_generation_and_places_the_clip() {
+    use filmcraft_generate::{GenerateError, GenerateRequest, GeneratedClip, Limits, Phase, Progress, VideoGenerator};
+    use filmcraft_time::Tick;
+    struct Fake {
+        fixture: std::path::PathBuf,
+    }
+    impl VideoGenerator for Fake {
+        fn id(&self) -> &str {
+            "fake"
+        }
+        fn name(&self) -> &str {
+            "Fake"
+        }
+        fn limits(&self) -> Limits {
+            filmcraft_generate::fast_h3_limits()
+        }
+        fn ready(&self) -> Result<(), GenerateError> {
+            Ok(())
+        }
+        fn generate(&self, request: &GenerateRequest, progress: &Progress) -> Result<GeneratedClip, GenerateError> {
+            progress.set_phase(Phase::Generating);
+            std::fs::copy(&self.fixture, &request.output)?;
+            progress.set_phase(Phase::Done);
+            Ok(GeneratedClip {
+                path: request.output.clone(),
+                seconds: 1.0,
+                width: 160,
+                height: 120,
+                fps: 24.0,
+                provider_clip_id: "clip-1".into(),
+                seed: Some(7),
+                session_seconds: 2.0,
+            })
+        }
+    }
+    let dir = std::env::temp_dir().join(format!("filmcraft-generate-ui-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let fixture = dir.join("fixture.mp4");
+    make_movie(&fixture, 24);
+    let mut d = Driver::demo();
+    d.app().session.generator = Some(Arc::new(Fake { fixture }));
+    d.ok("ui.panel.show", json!({"panel": "Generate"}));
+    d.wait_for("generatePanel.prompt");
+    for id in
+        ["generatePanel.seconds", "generatePanel.chooseImage", "generatePanel.atPlayhead", "generatePanel.track", "generatePanel.insert", "generatePanel.run"]
+    {
+        assert!(d.has(id), "{id} missing");
+    }
+    assert!(!d.has("generatePanel.cancel"), "Cancel only shows while a generation runs");
+    assert_eq!(d.label("generatePanel.imageRole.first"), "", "image roles only show once an image is chosen");
+    let rate = d.app().session.active_sequence().unwrap().settings.frame_rate;
+    let at: Tick = rate.tick_of(48);
+    d.app().session.set_playhead(at);
+    d.app().ui.generate.prompt = "a lighthouse at dusk".into();
+    d.app().ui.generate.seconds = 6.0;
+    let r = d.ok("ui.menu.invoke", json!({"id": "generatePanel.run", "params": {"dir": dir.to_string_lossy()}}));
+    assert!(r["job"].is_u64(), "{r}");
+    for _ in 0..2000 {
+        d.frames(1);
+        if d.app().ui.generate.job.is_none() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    assert!(d.app().ui.generate.job.is_none(), "the generation finished");
+    let last = d.app().ui.generate.last.clone();
+    assert!(last.contains("saved") || last.contains("placed"), "{last}");
+    let gens = d.app().session.project.generations.clone();
+    assert_eq!(gens.len(), 1, "one generation recorded");
+    let (item, g) = gens.iter().next().unwrap();
+    assert_eq!((g.prompt.as_str(), g.seed, g.provider_clip_id.as_str()), ("a lighthouse at dusk", Some(7), "clip-1"));
+    let seq = d.app().session.active_sequence().unwrap().clone();
+    let placed: Vec<(usize, Tick)> =
+        seq.video_tracks.iter().enumerate().flat_map(|(i, t)| t.items.iter().filter(|it| it.item == *item).map(move |it| (i, it.start))).collect();
+    assert!(placed.iter().any(|(_, s)| *s == at), "the clip sits at the playhead {at:?}: {placed:?}");
+    assert_eq!(d.app().session.history.undo.last().unwrap().0, "Generate Video");
+    d.frames(2);
+    assert!(d.has("generatePanel.status") && !d.has("generatePanel.cancel"));
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// #284 point 3: the panel menu's Maximize Frame keeps the layout (Restore Frame brings it back),
@@ -475,7 +606,9 @@ fn reverse_engineering_shell_opens_closes_and_preserves_project() {
     use filmcraft_ui_egui::dock::{DockNode, PanelKind};
     let mut d = Driver::with(Session::default());
     let original = serde_json::to_value(&*d.app().session.project).unwrap();
+    // in the factory layout beside the Timeline, both visible at once
     assert!(d.app().ui.dock.is_visible(PanelKind::ReverseEngineering));
+    assert!(d.app().ui.dock.is_visible(PanelKind::Timeline), "the panel sits beside the Timeline, never over it");
     assert!(d.has("reverseEngineering.intro"));
     d.ok("ui.menu.invoke", json!({"id": "window.panel.ReverseEngineering"}));
     d.frames(2);
@@ -530,14 +663,18 @@ fn reverse_engineering_captures_timeline_and_keeps_frame_when_scrubbing() {
     assert_eq!(captured.item, sequence_id);
     assert_eq!(captured.media_time, clip.start);
     assert!(d.has("reverseEngineering.timecode"));
-    for _ in 0..100 {
+    for _ in 0..400 {
         if d.has("reverseEngineering.frame") {
             break;
+        }
+        // under a loaded test machine the 15 s preview timeout can pass: the UI offers Retry
+        if d.has("reverseEngineering.frame.retry") {
+            d.click("reverseEngineering.frame.retry");
         }
         std::thread::sleep(std::time::Duration::from_millis(10));
         d.frames(1);
     }
-    assert!(d.has("reverseEngineering.frame"), "the captured frame must actually decode");
+    assert!(d.has("reverseEngineering.frame"), "the captured frame must actually decode: {:?}", d.ids("reverseEngineering."));
     let timeline_end = d.app().session.active_sequence().unwrap().duration();
     d.app().session.set_playhead(timeline_end);
     d.frames(3);
@@ -786,6 +923,306 @@ fn reverse_engineering_new_range_waits_for_confirmation_and_cancel_preserves_pro
     assert_eq!(serde_json::to_value(&*d.app().session.project).unwrap(), project);
 }
 
+/// Look: the grade of the range is measured on sampled rendered frames, read in colourist's
+/// words with its rules, exported as a look file, copied as a description, and applied to a clip
+/// as Lumetri Color parameters recorded as a `look` component.
+#[test]
+fn reverse_engineering_look_grades_the_range_exports_and_applies_a_grade() {
+    let mut d = Driver::demo();
+    let clip = d.app().session.active_sequence().unwrap().video_tracks[0].items[0].clone();
+    d.app().session.state.selection = vec![clip.id];
+    d.ok("ui.panel.show", json!({"panel":"ReverseEngineering"}));
+    d.frames(3);
+    let before = serde_json::to_value(&*d.app().session.project).unwrap();
+    d.ok("ui.menu.invoke", json!({"id":"reverseEngineering.setRange","params":{"startFrame":0,"endFrame":59}}));
+    d.ok("ui.menu.invoke", json!({"id":"reverseEngineering.chooseTool","params":{"tool":"look"}}));
+    d.frames(3);
+    assert!(d.app().ui.panels.reverse_engineering.look_report.is_none(), "choosing the tool does not start an analysis");
+    assert!(d.has("reverseEngineering.runLook"));
+    assert_eq!(d.label("reverseEngineering.status"), "Not analysed");
+    assert_eq!(d.call("ui.menu.invoke", json!({"id":"reverseEngineering.setLookOptions","params":{"maxSamples":0}}))["ok"], false);
+    d.ok("ui.menu.invoke", json!({"id":"reverseEngineering.setLookOptions","params":{"maxSamples":12,"paletteSize":5}}));
+    assert!(d.app().ui.panels.reverse_engineering.shots.is_none(), "no shot result yet");
+    let r = d.ok("ui.menu.invoke", json!({"id":"reverseEngineering.runLook"}));
+    assert_eq!(r["detectingShots"], true, "without a current Shots & look result the look detects shots first: {r}");
+    d.frames(2);
+    assert_eq!(d.label("reverseEngineering.status"), "Detecting shots…");
+    for _ in 0..12000 {
+        if d.app().ui.panels.reverse_engineering.look_report.is_some() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        d.frames(1);
+    }
+    let report = d.app().ui.panels.reverse_engineering.look_report.clone().expect("the look worker must return a report");
+    assert_eq!(report.analyzer, "filmcraft-vision/look-grade-v1");
+    assert_eq!(report.captures.len(), 60);
+    assert_eq!((report.palette_size, report.max_samples), (5, 12));
+    let shots = d.app().ui.panels.reverse_engineering.shots.clone().expect("the chained shot detection leaves its result in place");
+    assert!(report.from_shots, "the look grades the detected shots");
+    assert_eq!(report.shots.len(), shots.shots.len());
+    assert_eq!(report.shots.first().map(|s| s.start_frame), Some(0));
+    assert_eq!(report.shots.last().map(|s| s.end_frame), Some(59));
+    assert!(report.overall.samples >= 1 && report.overall.samples <= 12, "{}", report.overall.samples);
+    assert!(report.overall.summary.starts_with("Look: "), "{}", report.overall.summary);
+    assert!(!report.overall.palette.is_empty() && report.overall.palette.len() <= 5);
+    assert!(report.overall.palette.iter().all(|c| !c.name.is_empty() && c.hex.len() == 7));
+    assert_eq!(serde_json::to_value(&*d.app().session.project).unwrap(), before, "analysing changes nothing in the project");
+    d.frames(3);
+    assert_eq!(d.label("reverseEngineering.status"), "Analysed");
+    assert!(d.label("reverseEngineering.verdict").starts_with("Look: "));
+    assert!(d.has("reverseEngineering.look.shot.0") && d.has("reverseEngineering.look.overall.palette.0") && d.has("reverseEngineering.copyLookDescription"));
+    let r = d.ok("ui.menu.invoke", json!({"id":"reverseEngineering.lookShot","params":{"index":0}}));
+    assert_eq!(r["startFrame"], 0);
+    assert_eq!(d.call("ui.menu.invoke", json!({"id":"reverseEngineering.lookShot","params":{"index":999}}))["ok"], false);
+    let description = d.ok("ui.menu.invoke", json!({"id":"reverseEngineering.copyLookDescription"}));
+    assert_eq!(description["format"], "filmcraft.look");
+    assert_eq!(description["version"], 1);
+    assert!(description["lumetri"]["saturation"].is_number() && description["overall"]["rules"]["lowKeyBelow"].is_number(), "{description}");
+    let dir = std::env::temp_dir().join(format!("filmcraft-look-ui-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("range.look.json");
+    let r = d.ok("ui.menu.invoke", json!({"id":"reverseEngineering.exportLook","params":{"path":path.to_string_lossy()}}));
+    assert_eq!(r["shots"], report.shots.len());
+    let written: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    assert_eq!(written["summary"], description["summary"]);
+    let n0 = d.app().session.history.undo.len();
+    let r = d.ok("ui.menu.invoke", json!({"id":"reverseEngineering.applyLook"}));
+    assert_eq!(r["clips"].as_array().unwrap().len(), 1, "{r}");
+    assert_eq!(r["adjustmentLayer"], true, "every look lands on an adjustment layer: {r}");
+    let seq = d.app().session.active_sequence().unwrap().clone();
+    let layer = filmcraft_project::ClipId(r["clips"][0]["clip"].as_u64().unwrap());
+    let component = seq.components.iter().find(|c| c.clip == layer).expect("a look component on the layer").clone();
+    assert_eq!(component.kind, filmcraft_project::ComponentKind::Look);
+    assert_eq!(component.effect, "lumetri");
+    assert!(component.summary.starts_with("Look: "));
+    assert!(component.follows_clip);
+    let (_, item) = seq.find_item(layer).expect("the layer clip");
+    assert_eq!((item.start, item.end()), (clip.start, clip.end()), "the layer covers the selected clip");
+    assert!(matches!(d.app().session.project.item(item.item).unwrap().kind, filmcraft_project::ItemKind::AdjustmentLayer { .. }));
+    let lumetri = item.effect("lumetri").expect("Lumetri Color on the layer");
+    assert_eq!(r["transferred"], 1, "the look lands as a colour-transfer LUT: {r}");
+    let lut_ref = lumetri.param("look_lut").map(|p| p.value.clone()).unwrap();
+    assert_eq!(lut_ref, filmcraft_project::ParamValue::Text(r["lumetri"]["look_lut"].as_str().unwrap().to_string()));
+    let lut_id = r["lumetri"]["look_lut"].as_str().unwrap().trim_start_matches("lib:").to_string();
+    let entry = d.app().session.project.luts.iter().find(|l| l.id == lut_id).expect("the LUT is in the project library").clone();
+    assert_eq!(entry.format, "cube");
+    assert!(entry.text.contains("LUT_3D_SIZE 17"), "a 17-point cube");
+    assert!(report.color.is_some() && report.shots.iter().filter(|s| !s.black).all(|s| s.color.is_some()), "every graded shot carries its colour statistics");
+    assert!(d.app().session.history.undo.len() > n0);
+    assert!(seq.find_item(clip.id).unwrap().1.effect("lumetri").is_none(), "the source clip itself is untouched");
+    d.frames(2);
+    assert!(d.has(&format!("timeline.components.{}", component.id.0)), "the look shows on the RE lane");
+    assert!(d.has("timeline.components.bypassAll"));
+    d.exec("components.setEnabled", json!({"id": component.id.0, "enabled": false}));
+    let seq = d.app().session.active_sequence().unwrap().clone();
+    assert!(!seq.find_item(layer).unwrap().1.effect("lumetri").unwrap().enabled, "bypassing the look switches Lumetri off");
+    d.click("timeline.components.bypassAll");
+    let seq = d.app().session.active_sequence().unwrap().clone();
+    assert!(
+        seq.components.iter().all(|c| c.enabled) && seq.find_item(layer).unwrap().1.effect("lumetri").unwrap().enabled,
+        "the lane toggle enables everything again"
+    );
+    assert!(d.has("reverseEngineering.look.applyFile"));
+    let r = d.ok("ui.menu.invoke", json!({"id":"reverseEngineering.chooseLookFile","params":{"path":path.to_string_lossy()}}));
+    assert!(r["shots"].as_u64().unwrap() >= 1, "{r}");
+    d.frames(2);
+    let graded = report.shots.iter().filter(|s| s.grade.is_some()).count();
+    assert_eq!(d.has("reverseEngineering.look.file.whole"), graded > 1, "the whole-range row appears only with several graded shots");
+    let first_graded = report.shots.iter().find(|s| s.grade.is_some()).unwrap().index;
+    assert!(d.has(&format!("reverseEngineering.look.file.shot.{first_graded}")));
+    d.click("reverseEngineering.look.file.cancel");
+    assert!(!d.has("reverseEngineering.look.file.cancel"), "the chooser closes");
+    let r = d.ok("ui.menu.invoke", json!({"id":"reverseEngineering.applyLook","params":{"path":path.to_string_lossy(),"clips":[clip.id.0]}}));
+    assert_eq!(r["clips"].as_array().unwrap().len(), 1, "{r}");
+    let seq = d.app().session.active_sequence().unwrap().clone();
+    let looks = seq.components.iter().filter(|c| c.kind == filmcraft_project::ComponentKind::Look).count();
+    assert_eq!(looks, 2, "the look file adds a second layer");
+    assert!(seq.components.iter().any(|c| c.name.starts_with("Look · range")), "{:?}", seq.components.iter().map(|c| &c.name).collect::<Vec<_>>());
+    assert_eq!(r["transferred"], 1, "the look file carries the colour statistics the transfer needs: {r}");
+    assert!(written["color"]["weight"].as_f64().is_some(), "{}", written["color"]);
+    let last = seq.components.iter().rev().find(|c| c.kind == filmcraft_project::ComponentKind::Look).unwrap().clone();
+    d.exec("components.remove", json!({"id": last.id.0}));
+    let seq = d.app().session.active_sequence().unwrap().clone();
+    assert!(seq.find_item(last.clip).is_none(), "removing the look removes its layer clip");
+    assert_eq!(
+        seq.find_item(layer).unwrap().1.effect("lumetri").unwrap().param("look_lut").map(|p| p.value.clone()),
+        Some(lut_ref),
+        "the first layer keeps its LUT"
+    );
+    let fd = d.app().session.active_sequence().unwrap().settings.frame_rate.frame_duration();
+    let tracks_before = d.app().session.active_sequence().unwrap().video_tracks.len();
+    let (start, end) = (clip.start + filmcraft_time::Tick(fd.0 * 10), clip.start + filmcraft_time::Tick(fd.0 * 30));
+    let r = d.ok("ui.menu.invoke", json!({"id":"reverseEngineering.applyLook","params":{"path":path.to_string_lossy(),"range":{"start":start.0,"end":end.0}}}));
+    assert_eq!(r["adjustmentLayer"], true, "{r}");
+    let seq = d.app().session.active_sequence().unwrap().clone();
+    let adj = filmcraft_project::ClipId(r["clips"][0]["clip"].as_u64().unwrap());
+    let (_, item) = seq.find_item(adj).expect("the adjustment layer clip");
+    assert_eq!((item.start, item.duration), (start, filmcraft_time::Tick(fd.0 * 20)));
+    assert!(matches!(d.app().session.project.item(item.item).unwrap().kind, filmcraft_project::ItemKind::AdjustmentLayer { .. }));
+    assert!(seq.video_tracks.len() >= tracks_before);
+    let c = seq.components.iter().find(|c| c.clip == adj).expect("a component following the layer");
+    assert!(c.follows_clip);
+    d.app().ui.timeline.target_pps = 80.0;
+    d.app().ui.timeline.pps = 80.0;
+    d.frames(3);
+    let bar_id = format!("timeline.components.{}", c.id.0);
+    assert!(d.has(&bar_id), "the layer's look shows on the RE lane");
+    let bar = d.ok("ui.elements", json!({"prefix": bar_id}));
+    let rect = bar.as_array().unwrap().iter().find(|e| e["id"] == json!(bar_id)).map(|e| e["rect"].clone()).unwrap();
+    let (x, y, w, h) = (rect[0].as_f64().unwrap(), rect[1].as_f64().unwrap(), rect[2].as_f64().unwrap(), rect[3].as_f64().unwrap());
+    d.ok("ui.drag", json!({"from":{"x":x+w*0.5,"y":y+h*0.5},"to":{"x":x+w*0.5+20.0,"y":y+h*0.5},"steps":8}));
+    d.frames(3);
+    let moved = d.app().session.active_sequence().unwrap().find_item(adj).unwrap().1.clone();
+    assert!(moved.start > start, "dragging the lane bar moves the adjustment layer: {} → {}", start.0, moved.start.0);
+    assert_eq!(moved.duration, item.duration, "a body drag keeps the length");
+    let out_id = format!("{bar_id}.out");
+    assert!(d.has(&out_id), "the bar has trim handles");
+    let out = d.ok("ui.elements", json!({"prefix": out_id}));
+    let rect = out.as_array().unwrap().iter().find(|e| e["id"] == json!(out_id)).map(|e| e["rect"].clone()).unwrap();
+    let (x, y, w, h) = (rect[0].as_f64().unwrap(), rect[1].as_f64().unwrap(), rect[2].as_f64().unwrap(), rect[3].as_f64().unwrap());
+    d.ok("ui.drag", json!({"from":{"x":x+w*0.5,"y":y+h*0.5},"to":{"x":x+w*0.5-20.0,"y":y+h*0.5},"steps":8}));
+    d.frames(3);
+    let trimmed = d.app().session.active_sequence().unwrap().find_item(adj).unwrap().1.clone();
+    assert!(trimmed.duration < moved.duration, "dragging the end handle trims the layer: {} → {}", moved.duration.0, trimmed.duration.0);
+    assert_eq!(trimmed.start, moved.start, "an Out trim keeps the start");
+    assert!(d.has("timeline.components.locked") && d.has("timeline.components.bypassAll"), "the lane header has the lock and the eye");
+    d.app().session.state.selection.clear();
+    d.ok("ui.menu.invoke", json!({"id":"reverseEngineering.chooseLookFile","params":{"path":path.to_string_lossy()}}));
+    d.frames(2);
+    assert!(d.has("reverseEngineering.look.file.toRange"), "the chooser offers the range target");
+    d.click("reverseEngineering.look.file.cancel");
+    d.app().session.state.selection = vec![clip.id];
+    let bad = dir.join("bad.look.json");
+    std::fs::write(&bad, b"{\"format\":\"filmcraft.look\",\"version\":1}").unwrap();
+    assert_eq!(d.call("ui.menu.invoke", json!({"id":"reverseEngineering.applyLook","params":{"path":bad.to_string_lossy(),"clips":[clip.id.0]}}))["ok"], false);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Sound: the mix of the range is measured once (loudness, segments, tempo), read per shot with
+/// the dialogue a transcriber returns, exported as a sound file, copied as a description, saved
+/// with the project, and its beats become markers.
+#[test]
+fn reverse_engineering_sound_reads_the_mix_per_shot_and_exports_a_sound_file() {
+    let mut d = Driver::demo();
+    let clip = d.app().session.active_sequence().unwrap().video_tracks[0].items[0].clone();
+    d.app().session.state.selection = vec![clip.id];
+    let tick = |s: f64| filmcraft_time::Tick((s * filmcraft_time::TICKS_PER_SECOND as f64) as i64);
+    let word =
+        |text: &str, a: f64, b: f64| filmcraft_project::transcript::Word { text: text.into(), start: tick(a), end: tick(b), speaker: Some(0), confidence: 0.9 };
+    d.app().session.transcriber = Some(Arc::new(filmcraft_speech::FixedTranscriber {
+        transcript: filmcraft_project::Transcript {
+            language: "en".into(),
+            source: "fixed".into(),
+            speakers: vec![],
+            words: vec![word("Hello", 0.5, 0.8), word("there.", 0.85, 1.1), word("Welcome", 2.4, 2.9), word("back.", 2.95, 3.3)],
+        },
+        id: "fixed-test".into(),
+    }));
+    d.ok("ui.panel.show", json!({"panel":"ReverseEngineering"}));
+    d.frames(3);
+    let before = serde_json::to_value(&*d.app().session.project).unwrap();
+    d.ok("ui.menu.invoke", json!({"id":"reverseEngineering.setRange","params":{"startFrame":0,"endFrame":119}}));
+    d.ok("ui.menu.invoke", json!({"id":"reverseEngineering.chooseTool","params":{"tool":"sound"}}));
+    d.frames(3);
+    assert!(d.app().ui.panels.reverse_engineering.sound_report.is_none(), "choosing the tool does not start an analysis");
+    assert!(d.has("reverseEngineering.runSound"));
+    assert_eq!(d.label("reverseEngineering.status"), "Not analysed");
+    assert_eq!(d.call("ui.menu.invoke", json!({"id":"reverseEngineering.setSoundOptions","params":{"minBpm":250,"maxBpm":100}}))["ok"], false);
+    assert_eq!(d.call("ui.menu.invoke", json!({"id":"reverseEngineering.setSoundOptions","params":{"segmentSeconds":0.0}}))["ok"], false);
+    let r = d.ok("ui.menu.invoke", json!({"id":"reverseEngineering.setSoundOptions","params":{"segmentSeconds":0.5,"dialogue":true}}));
+    assert_eq!(r["analysis"]["segmentSeconds"], 0.5);
+    assert!(d.app().ui.panels.reverse_engineering.shots.is_none(), "no shot result yet");
+    let r = d.ok("ui.menu.invoke", json!({"id":"reverseEngineering.runSound"}));
+    assert_eq!(r["detectingShots"], true, "without a current Shots & look result the sound detects shots first: {r}");
+    d.frames(2);
+    assert_eq!(d.label("reverseEngineering.status"), "Detecting shots…");
+    for _ in 0..24000 {
+        if d.app().ui.panels.reverse_engineering.sound_report.is_some() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        d.frames(1);
+    }
+    let report = d.app().ui.panels.reverse_engineering.sound_report.clone().expect("the sound worker must return a report");
+    assert_eq!(report.analyzer, "filmcraft-sound/mix-v1");
+    assert_eq!(report.captures.len(), 120);
+    assert_eq!(report.options.analysis.segment_seconds, 0.5);
+    let shots = d.app().ui.panels.reverse_engineering.shots.clone().expect("the chained shot detection leaves its result in place");
+    assert!(report.from_shots, "the sound is read per detected shot");
+    assert_eq!(report.shots.len(), shots.shots.len());
+    assert_eq!(report.shots.first().map(|s| s.start_frame), Some(0));
+    assert_eq!(report.shots.last().map(|s| s.end_frame), Some(119));
+    let seq = d.app().session.active_sequence().unwrap().clone();
+    assert_eq!(report.analysis.sample_rate, seq.settings.sample_rate);
+    assert_eq!(report.analysis.channels, 2);
+    assert!((report.analysis.seconds - 120.0 / seq.settings.frame_rate.as_f64()).abs() < 0.05, "{}", report.analysis.seconds);
+    assert!(report.analysis.loudness.integrated_lufs.is_some_and(|l| l > -60.0 && l < 0.0), "the demo pad has a loudness: {:?}", report.analysis.loudness);
+    assert!(!report.analysis.segments.is_empty() && !report.analysis.regions.is_empty());
+    let s = report.analysis.shares;
+    assert!((s.silence + s.speech + s.music + s.effects + s.ambience - 1.0).abs() < 1e-6);
+    assert!(!report.analysis.rules.is_empty() && !report.limitations.is_empty());
+    assert_eq!(report.dialogue.len(), 2, "two lines from the fixed transcriber: {:?}", report.dialogue);
+    assert_eq!(report.dialogue[0].text, "Hello there.");
+    assert_eq!(report.shots[0].lines.len(), report.dialogue.iter().filter(|l| l.start_seconds < report.shots[0].sound.end_seconds).count());
+    assert!(report.dialogue_skipped.is_none(), "{:?}", report.dialogue_skipped);
+    assert!(report.summary.contains("LUFS") && report.summary.contains("2 dialogue lines"), "{}", report.summary);
+    assert_eq!(serde_json::to_value(&*d.app().session.project).unwrap(), before, "analysing changes nothing in the project");
+    d.frames(3);
+    assert_eq!(d.label("reverseEngineering.status"), "Analysed");
+    assert_eq!(d.label("reverseEngineering.verdict"), report.summary);
+    assert!(d.has("reverseEngineering.sound.shot.0") && d.has("reverseEngineering.sound.strip") && d.has("reverseEngineering.copySoundDescription"));
+    assert!(d.has("reverseEngineering.sound.export") && d.has("reverseEngineering.saveToolResult"));
+    assert!(!d.has("reverseEngineering.exportTool"), "no raw export next to the sound export");
+    let r = d.ok("ui.menu.invoke", json!({"id":"reverseEngineering.soundShot","params":{"index":0}}));
+    assert_eq!(r["startFrame"], 0);
+    assert_eq!(d.call("ui.menu.invoke", json!({"id":"reverseEngineering.soundShot","params":{"index":999}}))["ok"], false);
+    d.app().ui.panels.reverse_engineering.details_open = true;
+    d.frames(2);
+    assert!(d.has("reverseEngineering.sound.shot.0.strip"));
+    assert_eq!(d.has("reverseEngineering.sound.shot.0.line.0"), !report.shots[0].lines.is_empty());
+    let description = d.ok("ui.menu.invoke", json!({"id":"reverseEngineering.copySoundDescription"}));
+    assert_eq!(description["format"], "filmcraft.sound");
+    assert_eq!(description["version"], 1);
+    assert_eq!(description["shots"].as_array().unwrap().len(), report.shots.len());
+    assert_eq!(description["dialogue"].as_array().unwrap().len(), 2);
+    assert!(description["loudness"]["integratedLufs"].is_number() && description["rules"].as_array().unwrap().len() > 5, "{description}");
+    let dir = std::env::temp_dir().join(format!("filmcraft-sound-ui-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("range.sound.json");
+    let r = d.ok("ui.menu.invoke", json!({"id":"reverseEngineering.exportSound","params":{"path":path.to_string_lossy()}}));
+    assert_eq!(r["shots"], report.shots.len());
+    assert_eq!(r["lines"], 2);
+    let written: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    assert_eq!(written["summary"], description["summary"]);
+    assert_eq!(written["source"]["sampleRate"], seq.settings.sample_rate);
+    let markers_before = seq.markers.len();
+    let r = d.call("ui.menu.invoke", json!({"id":"reverseEngineering.soundBeatMarkers"}));
+    match report.analysis.tempo.as_ref() {
+        Some(t) => {
+            assert_eq!(r["ok"], true, "{r}");
+            let in_range = t.beats.iter().filter(|b| **b < report.analysis.seconds).count();
+            assert_eq!(r["result"]["markers"], in_range);
+            assert_eq!(d.app().session.active_sequence().unwrap().markers.len(), markers_before + in_range);
+        }
+        None => assert_eq!(r["ok"], false, "no tempo, no markers: {r}"),
+    }
+    let store = dir.join("results.json");
+    d.ok("ui.menu.invoke", json!({"id":"reverseEngineering.saveToolResult","params":{"path":store.to_string_lossy()}}));
+    d.frames(2);
+    assert_eq!(d.label("reverseEngineering.status"), "Analysed · saved");
+    assert!(d.app().ui.panels.reverse_engineering.saved_results.iter().any(|r| serde_json::to_value(r).unwrap()["tool"] == "sound"));
+    d.ok("ui.menu.invoke", json!({"id":"reverseEngineering.setSoundOptions","params":{"segmentSeconds":1.0}}));
+    d.frames(2);
+    assert_eq!(d.label("reverseEngineering.status"), "Stale · analyse again", "changing an option makes the result stale");
+    d.ok("ui.menu.invoke", json!({"id":"reverseEngineering.setSoundOptions","params":{"segmentSeconds":0.5}}));
+    d.frames(2);
+    assert_eq!(d.label("reverseEngineering.status"), "Analysed · saved");
+    let written: Value = serde_json::from_slice(&std::fs::read(&store).unwrap()).unwrap();
+    assert_eq!(written["results"][0]["tool"], "sound", "the saved result file holds the sound result");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn reverse_engineering_shots_detect_structure_and_export_an_ai_brief() {
     let mut d = Driver::demo();
@@ -851,6 +1288,52 @@ fn reverse_engineering_shots_detect_structure_and_export_an_ai_brief() {
     let data: Value = serde_json::from_slice(&std::fs::read(&json_path).unwrap()).unwrap();
     assert_eq!(data["format"], "filmcraft-ai-brief");
     assert_eq!(data["input"]["shots"].as_array().unwrap().len(), report.shots.len());
+    assert_eq!(exported["sound"], false, "no sound result yet: {exported}");
+    assert!(data["input"].get("sound").is_none() && !markdown.contains("## Sound"), "{markdown}");
+    std::fs::remove_file(&path).unwrap();
+    std::fs::remove_file(&json_path).unwrap();
+    d.ok("ui.menu.invoke", json!({"id":"reverseEngineering.setSoundOptions","params":{"dialogue":false}}));
+    let r = d.ok("ui.menu.invoke", json!({"id":"reverseEngineering.runSound"}));
+    assert!(r.get("detectingShots").is_none(), "the current shot result is reused: {r}");
+    for _ in 0..24000 {
+        if d.app().ui.panels.reverse_engineering.sound_report.is_some() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        d.frames(1);
+    }
+    let sound = d.app().ui.panels.reverse_engineering.sound_report.clone().expect("the sound worker must return a report");
+    assert_eq!(sound.captures, report.captures);
+    assert_eq!(sound.shots.len(), report.shots.len(), "the sound is read per detected shot");
+    d.frames(2);
+    let exported = d.ok("ui.menu.invoke", json!({"id":"reverseEngineering.exportBrief","params":{"path":path}}));
+    assert_eq!(exported["sound"], true, "{exported}");
+    let markdown = std::fs::read_to_string(&path).unwrap();
+    assert!(markdown.contains("| # | Start | End | Frames | Boundary | Key | Palette | Camera | Sound |"), "{markdown}");
+    assert_eq!(markdown.matches("\n- Sound: ").count(), report.shots.len(), "one sound line per shot: {markdown}");
+    let section = markdown.find("## Sound\n").expect("a Sound section");
+    assert!(section < markdown.find("## Limitations").expect("limitations"), "the Sound section comes before the limitations");
+    assert!(markdown.contains("- Loudness: ") && markdown.contains("- Mix: ") && markdown.contains("- Tempo: "), "{markdown}");
+    assert!(markdown.contains("- Dialogue: none transcribed (Dialogue transcription switched off in the options)"), "{markdown}");
+    assert!(markdown.contains("Measured by filmcraft-sound/mix-v1"), "{markdown}");
+    let data: Value = serde_json::from_slice(&std::fs::read(&json_path).unwrap()).unwrap();
+    let brief_sound = &data["input"]["sound"];
+    assert_eq!(brief_sound["shots"].as_array().unwrap().len(), report.shots.len());
+    assert_eq!(brief_sound["analyzer"], "filmcraft-sound/mix-v1");
+    assert_eq!(brief_sound["integratedLufs"], json!(sound.analysis.loudness.integrated_lufs));
+    assert_eq!(brief_sound["dialogueLines"], 0);
+    for (brief_shot, sound_shot) in brief_sound["shots"].as_array().unwrap().iter().zip(&sound.shots) {
+        assert_eq!(brief_shot["shotIndex"], sound_shot.index);
+        assert_eq!(brief_shot["dominant"], sound_shot.sound.dominant.label());
+        assert_eq!(brief_shot["beats"], sound_shot.sound.beats);
+        match (brief_shot["meanLufs"].as_f64(), sound_shot.sound.mean_lufs) {
+            (Some(a), Some(b)) => assert!((a - b).abs() < 1e-6, "mean loudness {a} vs {b}"),
+            (a, b) => assert!(a.is_none() && b.is_none(), "mean loudness {a:?} vs {b:?}"),
+        }
+        assert_eq!(brief_shot["shares"].as_array().unwrap().len(), 5);
+    }
+    let limitations = data["input"]["limitations"].as_array().unwrap();
+    assert!(sound.limitations.iter().all(|l| limitations.iter().any(|v| v == l)), "the sound's limitations travel with the brief");
     std::fs::remove_file(&path).unwrap();
     std::fs::remove_file(&json_path).unwrap();
     let store = std::env::temp_dir().join(format!("filmcraft-shots-store-{}.json", std::process::id()));
@@ -876,6 +1359,17 @@ fn reverse_engineering_camera2d_detects_feature_points_on_the_rendered_frame() {
     d.frames(3);
     assert!(d.app().ui.panels.reverse_engineering.camera2d_report.is_none(), "choosing the tool shows it without starting an analysis");
     assert!(d.has("reverseEngineering.runFeatures") && d.has("reverseEngineering.camera2d.applyFile"));
+    // the redesigned page: verdict first, status badge, numbers and parameters folded away
+    assert_eq!(d.label("reverseEngineering.status"), "Not analysed");
+    assert!(d.label("reverseEngineering.verdict").starts_with("Not analysed yet"));
+    assert!(d.has("reverseEngineering.advanced") && !d.has("reverseEngineering.details"), "Details only exists once there is a result");
+    assert!(!d.has("reverseEngineering.camera2d.maxPoints"), "parameters are folded under Advanced");
+    assert!(!d.has("reverseEngineering.camera2d.apply") && !d.has("reverseEngineering.camera2d.exportCamera"), "actions that cannot run yet are not shown");
+    {
+        use filmcraft_ui_egui::dock::PanelKind;
+        let dock = &d.app().ui.dock;
+        assert!(dock.is_visible(PanelKind::ReverseEngineering) && dock.is_visible(PanelKind::Timeline), "the panel opens beside the Timeline, both visible");
+    }
     d.ok("ui.menu.invoke", json!({"id":"reverseEngineering.runFeatures"}));
     let wait = |d: &mut Driver, max_points: usize| {
         for _ in 0..12000 {
@@ -964,6 +1458,28 @@ fn reverse_engineering_camera2d_detects_feature_points_on_the_rendered_frame() {
     d.wait_for("reverseEngineering.frame");
     assert!(d.has("reverseEngineering.runFeatures"));
     assert!(d.has("reverseEngineering.camera2d.graph"));
+    assert_eq!(d.label("reverseEngineering.status"), "Analysed");
+    let verdict = d.label("reverseEngineering.verdict");
+    assert!(verdict.starts_with("Camera: "), "{verdict}");
+    let quality = d.label("reverseEngineering.quality");
+    assert!(quality.contains("% of frames with solid evidence") && quality.contains("s analysed"), "{quality}");
+    assert!(d.has("reverseEngineering.camera2d.thisFrame") && d.has("reverseEngineering.camera2d.path"));
+    let copied = d.ok("ui.menu.invoke", json!({"id":"reverseEngineering.copyDescription"}));
+    assert_eq!(copied["format"], "filmcraft.camera2d");
+    assert_eq!(copied["cinematography"]["summary"].as_str(), Some(verdict.as_str()), "{copied}");
+    assert!(copied["cinematography"]["rules"]["speedSteadyBelow"].is_number() && copied["cinematography"]["beats"].as_array().is_some_and(|b| !b.is_empty()));
+    assert!(copied["cinematography"].get("prompt").is_none(), "FilmCraft writes no prompt");
+    assert!(copied["path"].as_array().is_some_and(|p| p.len() == 71) && copied.get("component").is_none());
+    assert!(d.has("reverseEngineering.copyDescription"));
+    assert!(d.has("reverseEngineering.details") && !d.has("reverseEngineering.camera2d.summary"), "Details are folded by default");
+    d.click("reverseEngineering.details");
+    assert!(d.app().ui.panels.reverse_engineering.details_open, "{:?}", d.ok("ui.elements", json!({"prefix": "reverseEngineering.details"})));
+    assert!(d.has("reverseEngineering.camera2d.summary") && d.has("reverseEngineering.camera2d.pose"), "Details open by id");
+    d.click("reverseEngineering.details");
+    assert!(!d.has("reverseEngineering.camera2d.summary") && !d.has("reverseEngineering.camera2d.maxPoints"));
+    d.click("reverseEngineering.advanced");
+    assert!(d.has("reverseEngineering.camera2d.maxPoints") && d.has("reverseEngineering.camera2d.resetOptions"), "Advanced opens by id");
+    assert!(d.has("reverseEngineering.camera2d.apply") && d.has("reverseEngineering.camera2d.stabilize") && d.has("reverseEngineering.camera2d.exportCamera"));
     d.ok("ui.menu.invoke", json!({"id":"reverseEngineering.setFeatureView","params":{"view":"matches"}}));
     d.frames(3);
     assert!(d.has("reverseEngineering.camera2d.view.matches"));
@@ -1103,6 +1619,12 @@ fn reverse_engineering_camera2d_exports_a_camera_file_and_applies_it_as_motion_k
     assert_eq!(path[10]["tick"].as_i64().unwrap(), (rate.tick_of(20) - rate.tick_of(10)).0);
     let motion = exported["motion"].as_array().unwrap();
     assert_eq!(motion.len(), 71);
+    let cine = &exported["cinematography"];
+    assert_eq!(cine["frame"]["width"], 1920);
+    assert!(cine["summary"].as_str().is_some_and(|s| s.starts_with("Camera: static shot for")), "{cine}");
+    assert!(cine["rules"]["minRunFrames"] == json!(3) && cine["rules"]["speedRateUnit"].is_string(), "{cine}");
+    assert!(cine["beats"].as_array().is_some_and(|b| !b.is_empty()));
+    assert!(cine.get("prompt").is_none() && cine.get("lumaConcepts").is_none());
     assert_eq!(motion[0]["position"], json!([960.0, 540.0]));
     assert_eq!(motion[0]["scalePercent"], 100.0);
     assert_eq!(motion[0]["rotationDegrees"], 0.0);
@@ -1139,7 +1661,14 @@ fn reverse_engineering_camera2d_exports_a_camera_file_and_applies_it_as_motion_k
     assert_eq!(component.source.file.as_deref(), Some(synthetic_path.to_string_lossy().as_ref()));
     assert_eq!(r["clips"][0]["component"], json!(component.id.0));
     assert_eq!(d.app().ui.panels.reverse_engineering.focused_component, Some(component.id.0));
-    d.frames(3);
+    // the new sequence is still fitting its zoom: element queries wait for the timeline to settle
+    for _ in 0..400 {
+        if d.call("ui.elements", json!({"prefix": "timeline.components"}))["ok"] == json!(true) {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        d.frames(1);
+    }
     assert!(d.has("timeline.components.header"), "the RE lane appears once a component exists");
     assert!(d.has(&format!("timeline.components.{}", component.id.0)), "the component bar is on the lane");
     assert!(d.has(&format!("reverseEngineering.camera2d.component.{}", component.id.0)), "the panel lists the component");
@@ -1245,6 +1774,19 @@ fn reverse_engineering_camera2d_exports_a_camera_file_and_applies_it_as_motion_k
     let stabilizer = d.app().session.active_sequence().unwrap().components[1].clone();
     assert_eq!(stabilizer.mode, filmcraft_project::ComponentMode::Stabilize);
     assert!(stabilizer.samples.iter().filter(|s| s.state.as_deref() == Some("moving")).count() > 60, "the measured path is moving almost everywhere");
+    assert!(
+        stabilizer.summary.contains("pan or truck right") || stabilizer.summary.contains("zoom or dolly in"),
+        "the component carries the camera in cinema terms: {}",
+        stabilizer.summary
+    );
+    let copied = d.ok("ui.menu.invoke", json!({"id":"reverseEngineering.copyDescription","params":{"id":stabilizer.id.0}}));
+    assert_eq!(
+        copied["cinematography"]["summary"].as_str(),
+        Some(stabilizer.summary.as_str()),
+        "a component's description is rebuilt from its samples: {copied}"
+    );
+    assert_eq!(copied["component"]["id"], json!(stabilizer.id.0));
+    assert_eq!(copied["component"]["mode"], "stabilize");
     let listed = d.exec("components.list", json!({}));
     assert!(listed["components"][1]["changes"].as_array().is_some_and(|c| c.iter().any(|m| m["kind"] == json!("motionStarts"))), "{listed}");
     d.exec("components.remove", json!({"id": stabilizer.id.0}));

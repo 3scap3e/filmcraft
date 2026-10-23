@@ -199,6 +199,8 @@ pub fn poll(app: &mut FilmcraftApp, ctx: &egui::Context) {
     super::reverse_tracking::poll(app, ctx);
     super::reverse_shots::poll(app, ctx);
     super::reverse_camera2d::poll(app, ctx);
+    super::reverse_look::poll(app, ctx);
+    super::reverse_sound::poll(app, ctx);
     super::reverse_tools::poll(app, ctx);
     let Some(job) = ctx.data(|d| d.get_temp::<Job>(job_id())) else {
         return;

@@ -11,9 +11,11 @@ build = "build.rs"
 workspace = true
 
 [features]
-default = []
+default = ["reactor"]
 # Speech-to-text (Text panel ▸ Transcribe) with Whisper on the CPU, and model downloads.
 whisper = ["filmcraft-engine/whisper", "filmcraft-engine/speech-download"]
+# Generate panel: Reactor's FastH3 video model (HTTPS + WebRTC data channels; its DTLS uses `ring`).
+reactor = ["filmcraft-engine/reactor"]
 # Natural Text to Speech voices (Kokoro-82M on the CPU, downloaded on first use).
 neural-voices = ["filmcraft-engine/neural-voices"]
 

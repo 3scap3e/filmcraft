@@ -149,10 +149,22 @@ pub struct Options {
     pub min_shot_frames: usize,
     pub black_luma: f32,
     pub duplicate_tolerance: f32,
+    pub dissolve_shift: f32,
+    pub dissolve_min_frames: usize,
+    pub dissolve_max_frames: usize,
 }
 impl Default for Options {
     fn default() -> Self {
-        Self { cut_threshold: 0.3, adaptive_ratio: 3.0, min_shot_frames: 3, black_luma: 0.04, duplicate_tolerance: 0.004 }
+        Self {
+            cut_threshold: 0.3,
+            adaptive_ratio: 3.0,
+            min_shot_frames: 3,
+            black_luma: 0.04,
+            duplicate_tolerance: 0.004,
+            dissolve_shift: 0.25,
+            dissolve_min_frames: 3,
+            dissolve_max_frames: 72,
+        }
     }
 }
 impl Options {
@@ -166,8 +178,14 @@ impl Options {
             || !(0.0..=0.5).contains(&self.black_luma)
             || !self.duplicate_tolerance.is_finite()
             || !(0.0..=0.5).contains(&self.duplicate_tolerance)
+            || !self.dissolve_shift.is_finite()
+            || !(0.01..=3.0).contains(&self.dissolve_shift)
+            || !(2..=1000).contains(&self.dissolve_min_frames)
+            || !(self.dissolve_min_frames..=1000).contains(&self.dissolve_max_frames)
         {
-            return Err("Shot options: cut 0.01–1, ratio 1–100, minimum 1–1000 frames, black 0–0.5, duplicate 0–0.5".into());
+            return Err(
+                "Shot options: cut 0.01–1, ratio 1–100, minimum 1–1000 frames, black 0–0.5, duplicate 0–0.5, dissolve shift 0.01–3 over 2–1000 frames".into()
+            );
         }
         Ok(())
     }
@@ -236,6 +254,7 @@ pub enum Boundary {
     Cut,
     FromBlack,
     ToBlack,
+    Dissolve,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -250,6 +269,8 @@ pub struct Shot {
     pub keyframe: usize,
     pub boundary: Boundary,
     pub boundary_score: Option<f32>,
+    #[serde(default)]
+    pub transition_frames: usize,
     pub black: bool,
     pub mean_luma: f32,
     pub mean_saturation: f32,
@@ -277,6 +298,134 @@ fn local_median(changes: &[FrameChange], index: usize) -> f32 {
     values.get(values.len() / 2).copied().unwrap_or(0.0)
 }
 
+#[derive(Clone, Copy, Debug)]
+struct Start {
+    frame: usize,
+    boundary: Boundary,
+    score: Option<f32>,
+    transition_frames: usize,
+}
+
+fn stat_shift(from: &FrameChange, to: &FrameChange) -> f32 {
+    (to.mean_luma - from.mean_luma).abs() + (to.warm_bias - from.warm_bias).abs() + (to.mean_saturation - from.mean_saturation).abs()
+}
+
+const DISSOLVE_WANDER_RATIO: f32 = 2.0;
+const FADE_LUMA_STEP: f32 = 0.002;
+
+fn blocked_frames(changes: &[FrameChange], options: &Options, hard: &[Start]) -> Vec<bool> {
+    let mut blocked: Vec<bool> = changes.iter().map(|c| c.black).collect();
+    for start in hard {
+        if let Some(slot) = blocked.get_mut(start.frame) {
+            *slot = true;
+        }
+        match start.boundary {
+            Boundary::FromBlack => {
+                for i in (start.frame..).take(options.dissolve_max_frames) {
+                    let (Some(here), Some(next)) = (changes.get(i), changes.get(i + 1)) else { break };
+                    if next.mean_luma <= here.mean_luma + FADE_LUMA_STEP {
+                        break;
+                    }
+                    if let Some(slot) = blocked.get_mut(i + 1) {
+                        *slot = true;
+                    }
+                }
+            }
+            Boundary::ToBlack => {
+                for i in (1..=start.frame.saturating_sub(1)).rev().take(options.dissolve_max_frames) {
+                    let (Some(here), Some(previous)) = (changes.get(i), changes.get(i - 1)) else { break };
+                    if previous.mean_luma <= here.mean_luma + FADE_LUMA_STEP {
+                        break;
+                    }
+                    if let Some(slot) = blocked.get_mut(i - 1) {
+                        *slot = true;
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    blocked
+}
+
+fn dissolves(changes: &[FrameChange], options: &Options, hard: &[Start]) -> Vec<Start> {
+    let n = changes.len();
+    if n < 3 {
+        return Vec::new();
+    }
+    let blocked = blocked_frames(changes, options, hard);
+    let mut blocked_before = vec![0usize; n + 1];
+    for i in 0..n {
+        let count = blocked_before.get(i).copied().unwrap_or(0) + usize::from(blocked.get(i).copied().unwrap_or(true));
+        if let Some(slot) = blocked_before.get_mut(i + 1) {
+            *slot = count;
+        }
+    }
+    let blocked_in = |a: usize, b: usize| -> bool {
+        let hi = blocked_before.get(b.saturating_add(1).min(n)).copied().unwrap_or(0);
+        let lo = blocked_before.get(a.min(n)).copied().unwrap_or(0);
+        hi > lo
+    };
+    let steps: Vec<f32> = (0..n)
+        .map(|i| match (i.checked_sub(1).and_then(|p| changes.get(p)), changes.get(i)) {
+            (Some(p), Some(c)) => stat_shift(p, c),
+            _ => 0.0,
+        })
+        .collect();
+    let mut wander = vec![0.0f32; n + 1];
+    for i in 0..n {
+        let sum = wander.get(i).copied().unwrap_or(0.0) + steps.get(i).copied().unwrap_or(0.0);
+        if let Some(slot) = wander.get_mut(i + 1) {
+            *slot = sum;
+        }
+    }
+    let step_min = options.dissolve_shift / options.dissolve_max_frames.max(1) as f32;
+    let mut best_by_end: Vec<(f32, usize, usize)> = Vec::new();
+    for b in 1..n {
+        let mut best: Option<(f32, usize, usize)> = None;
+        for len in options.dissolve_min_frames..=options.dissolve_max_frames {
+            let Some(a) = b.checked_sub(len - 1).filter(|a| *a >= 1) else { break };
+            if blocked_in(a - 1, b.saturating_add(1).min(n - 1)) {
+                continue;
+            }
+            let (Some(before), Some(after)) = (changes.get(a - 1), changes.get(b)) else { continue };
+            let shift = stat_shift(before, after);
+            if shift < options.dissolve_shift {
+                continue;
+            }
+            let travelled = wander.get(b + 1).copied().unwrap_or(0.0) - wander.get(a).copied().unwrap_or(0.0);
+            if travelled > DISSOLVE_WANDER_RATIO * shift {
+                continue;
+            }
+            if best.is_none_or(|(s, _, _)| shift > s) {
+                best = Some((shift, a, b));
+            }
+        }
+        if let Some(candidate) = best {
+            best_by_end.push(candidate);
+        }
+    }
+    best_by_end.sort_by(|x, y| y.0.partial_cmp(&x.0).unwrap_or(std::cmp::Ordering::Equal).then_with(|| x.2.saturating_sub(x.1).cmp(&y.2.saturating_sub(y.1))));
+    let mut taken: Vec<(usize, usize)> = Vec::new();
+    let mut out = Vec::new();
+    for (shift, mut a, mut b) in best_by_end {
+        let gap = options.min_shot_frames;
+        if taken.iter().any(|(ta, tb)| a <= tb.saturating_add(gap) && b.saturating_add(gap) >= *ta) {
+            continue;
+        }
+        taken.push((a, b));
+        while a < b && steps.get(a).is_some_and(|s| *s < step_min) {
+            a += 1;
+        }
+        while b > a && steps.get(b).is_some_and(|s| *s < step_min) {
+            b -= 1;
+        }
+        let len = b.saturating_sub(a) + 1;
+        out.push(Start { frame: a + len / 2, boundary: Boundary::Dissolve, score: Some(shift.min(1.0)), transition_frames: len });
+    }
+    out
+}
+
 pub fn detect(changes: &[FrameChange], options: &Options) -> Result<Vec<Shot>, String> {
     options.validate()?;
     if changes.is_empty() || changes.len() > MAX_FRAMES {
@@ -290,38 +439,46 @@ pub fn detect(changes: &[FrameChange], options: &Options) -> Result<Vec<Shot>, S
             return Err("Invalid frame change record".into());
         }
     }
-    let mut starts: Vec<(usize, Boundary, Option<f32>)> = vec![(0, Boundary::RangeStart, None)];
+    let mut starts: Vec<Start> = vec![Start { frame: 0, boundary: Boundary::RangeStart, score: None, transition_frames: 0 }];
     for i in 1..changes.len() {
         let (Some(previous), Some(current)) = (changes.get(i - 1), changes.get(i)) else { continue };
         if previous.black != current.black {
-            starts.push((i, if current.black { Boundary::ToBlack } else { Boundary::FromBlack }, score(current)));
+            starts.push(Start {
+                frame: i,
+                boundary: if current.black { Boundary::ToBlack } else { Boundary::FromBlack },
+                score: score(current),
+                transition_frames: 0,
+            });
             continue;
         }
         if let Some(s) = score(current)
             && s >= options.cut_threshold
             && s >= options.adaptive_ratio * local_median(changes, i)
         {
-            starts.push((i, Boundary::Cut, Some(s)));
+            starts.push(Start { frame: i, boundary: Boundary::Cut, score: Some(s), transition_frames: 0 });
         }
     }
-    let mut spans: Vec<(usize, usize, Boundary, Option<f32>)> = Vec::new();
-    for (k, (start, boundary, boundary_score)) in starts.iter().enumerate() {
-        let end = starts.get(k + 1).map(|next| next.0 - 1).unwrap_or(changes.len() - 1);
-        spans.push((*start, end, *boundary, *boundary_score));
+    starts.extend(dissolves(changes, options, &starts));
+    starts.sort_by_key(|s| s.frame);
+    starts.dedup_by_key(|s| s.frame);
+    let mut spans: Vec<(usize, usize, Start)> = Vec::new();
+    for (k, start) in starts.iter().enumerate() {
+        let end = starts.get(k + 1).map(|next| next.frame.saturating_sub(1)).unwrap_or(changes.len() - 1);
+        spans.push((start.frame, end, *start));
     }
-    let mut merged: Vec<(usize, usize, Boundary, Option<f32>)> = Vec::new();
+    let mut merged: Vec<(usize, usize, Start)> = Vec::new();
     for span in spans {
-        let short = span.1 - span.0 + 1 < options.min_shot_frames;
+        let short = span.1.saturating_sub(span.0) + 1 < options.min_shot_frames;
         match merged.last_mut() {
             Some(previous) if short => previous.1 = span.1,
-            Some(previous) if previous.1 - previous.0 + 1 < options.min_shot_frames => {
+            Some(previous) if previous.1.saturating_sub(previous.0) + 1 < options.min_shot_frames => {
                 previous.1 = span.1;
             }
             _ => merged.push(span),
         }
     }
     let mut shots = Vec::new();
-    for (index, (start, end, boundary, boundary_score)) in merged.into_iter().enumerate() {
+    for (index, (start, end, Start { boundary, score: boundary_score, transition_frames, .. })) in merged.into_iter().enumerate() {
         let frames = changes.get(start..=end).ok_or("Shot span outside range")?;
         let count = frames.len();
         let n = count.max(1) as f32;
@@ -336,6 +493,7 @@ pub fn detect(changes: &[FrameChange], options: &Options) -> Result<Vec<Shot>, S
             keyframe: start + count / 2,
             boundary,
             boundary_score,
+            transition_frames,
             black: frames.iter().all(|c| c.black),
             mean_luma: frames.iter().map(|c| c.mean_luma).sum::<f32>() / n,
             mean_saturation: frames.iter().map(|c| c.mean_saturation).sum::<f32>() / n,
@@ -426,12 +584,106 @@ mod tests {
         let short = Options { min_shot_frames: 9, ..Options::default() };
         assert_eq!(detect(&changes, &short).unwrap().len(), 1, "short shots merge into their predecessor");
     }
+    fn hash(i: usize, seed: u32) -> u32 {
+        let mut x = (i as u32) ^ seed.wrapping_mul(0x9E37_79B9);
+        x ^= x >> 16;
+        x = x.wrapping_mul(0x7feb_352d);
+        x ^= x >> 15;
+        x = x.wrapping_mul(0x846c_a68b);
+        x ^= x >> 16;
+        x
+    }
+    fn textured(w: usize, h: usize, lo: [u8; 3], hi: [u8; 3], seed: u32) -> Vec<u8> {
+        let mut px = Vec::with_capacity(w * h * 4);
+        for i in 0..w * h {
+            let x = hash(i, seed);
+            for c in 0..3 {
+                let t = (x >> (8 * c)) & 0xff;
+                px.push(lo[c] + ((u32::from(hi[c] - lo[c]) * t) / 255) as u8);
+            }
+            px.push(255);
+        }
+        px
+    }
+    fn live(texture: &[u8], seed: u32) -> Vec<u8> {
+        let mut px = texture.to_vec();
+        for (i, chunk) in px.chunks_mut(4).enumerate() {
+            let n = (hash(i, seed) >> 24) as u8 / 32;
+            chunk[0] = chunk[0].saturating_add(n);
+            chunk[1] = chunk[1].saturating_add(n);
+            chunk[2] = chunk[2].saturating_add(n);
+        }
+        px
+    }
+    fn blend(a: &[u8], b: &[u8], t: f32) -> Vec<u8> {
+        a.iter().zip(b).map(|(x, y)| (f32::from(*x) + (f32::from(*y) - f32::from(*x)) * t).round().clamp(0.0, 255.0) as u8).collect()
+    }
+    #[test]
+    fn a_cross_dissolve_splits_the_shots_at_its_middle() {
+        let (w, h) = (64, 36);
+        let a = textured(w, h, [0, 20, 80], [80, 100, 200], 1);
+        let b = textured(w, h, [140, 90, 0], [255, 170, 80], 2);
+        let mut frames = Vec::new();
+        for i in 0..30 {
+            frames.push(live(&a, i));
+        }
+        for k in 1..=24u32 {
+            frames.push(live(&blend(&a, &b, k as f32 / 25.0), 100 + k));
+        }
+        for i in 0..30 {
+            frames.push(live(&b, 200 + i));
+        }
+        let signatures: Vec<_> = frames.iter().map(|f| signature(w, h, f).unwrap()).collect();
+        let ticks: Vec<i64> = (0..signatures.len() as i64).collect();
+        let options = Options::default();
+        let changes = changes(&signatures, &ticks, &options).unwrap();
+        assert!(changes.iter().all(|c| score(c).is_none_or(|s| s < options.cut_threshold)), "no frame change is cut-sized");
+        let shots = detect(&changes, &options).unwrap();
+        assert_eq!(shots.len(), 2, "{shots:?}");
+        assert_eq!(shots[1].boundary, Boundary::Dissolve);
+        assert!((40..=44).contains(&shots[1].start_frame), "boundary mid-dissolve, got {}", shots[1].start_frame);
+        assert!((20..=28).contains(&shots[1].transition_frames), "dissolve length, got {}", shots[1].transition_frames);
+        assert!(shots[1].boundary_score.unwrap() >= options.dissolve_shift);
+        assert_eq!(shots[0].transition_frames, 0);
+        let strict = Options { dissolve_shift: 3.0, ..Options::default() };
+        assert_eq!(detect(&changes, &strict).unwrap().len(), 1, "an unreachable shift disables dissolve detection");
+    }
+    #[test]
+    fn fades_from_black_and_camera_drift_are_not_dissolves() {
+        let (w, h) = (64, 36);
+        let a = textured(w, h, [60, 50, 30], [180, 170, 150], 7);
+        let black = frame(w, h, [0, 0, 0]);
+        let mut frames = Vec::new();
+        for _ in 0..4 {
+            frames.push(black.clone());
+        }
+        for k in 1..=24u32 {
+            frames.push(live(&blend(&black, &a, k as f32 / 24.0), k));
+        }
+        for i in 0..40u32 {
+            let mut drift = live(&a, 300 + i);
+            for chunk in drift.chunks_mut(4) {
+                chunk[0] = chunk[0].saturating_add((i / 3) as u8);
+            }
+            frames.push(drift);
+        }
+        let signatures: Vec<_> = frames.iter().map(|f| signature(w, h, f).unwrap()).collect();
+        let ticks: Vec<i64> = (0..signatures.len() as i64).collect();
+        let options = Options::default();
+        let changes = changes(&signatures, &ticks, &options).unwrap();
+        let shots = detect(&changes, &options).unwrap();
+        assert_eq!(shots.len(), 2, "{shots:?}");
+        assert_eq!(shots[1].boundary, Boundary::FromBlack);
+        assert!((4..=5).contains(&shots[1].start_frame), "the first faint frame may still read as black, got {}", shots[1].start_frame);
+    }
     #[test]
     fn hostile_inputs_are_errors() {
         let s = signature(4, 4, &frame(4, 4, [1, 2, 3])).unwrap();
         assert!(changes(std::slice::from_ref(&s), &[0, 1], &Options::default()).is_err());
         assert!(changes(&[s.clone(), s.clone()], &[1, 0], &Options::default()).is_err());
         assert!(changes(std::slice::from_ref(&s), &[0], &Options { cut_threshold: f32::NAN, ..Options::default() }).is_err());
+        assert!(Options { dissolve_max_frames: 2, ..Options::default() }.validate().is_err());
+        assert!(Options { dissolve_shift: 0.0, ..Options::default() }.validate().is_err());
         assert!(detect(&[], &Options::default()).is_err());
         let mut bad = changes(&[s], &[0], &Options::default()).unwrap();
         bad[0].mean_luma = 7.0;

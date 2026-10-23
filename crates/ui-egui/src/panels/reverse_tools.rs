@@ -37,9 +37,11 @@ pub enum SavedResult {
     CameraMoves(super::reverse_camera::CameraReport),
     #[serde(rename = "camera2d")]
     Features(super::reverse_camera2d::FeatureReport),
+    Look(super::reverse_look::LookReport),
+    Sound(super::reverse_sound::SoundReport),
 }
 impl SavedResult {
-    fn tool(&self) -> &str {
+    pub(super) fn tool(&self) -> &str {
         match self {
             Self::OpticalFlow(_) => "opticalFlow",
             Self::GlobalMotion(_) => "globalMotion",
@@ -52,9 +54,11 @@ impl SavedResult {
             Self::Shots(_) => "shots",
             Self::CameraMoves(_) => "cameraMoves",
             Self::Features(_) => "camera2d",
+            Self::Look(_) => "look",
+            Self::Sound(_) => "sound",
         }
     }
-    fn captures(&self) -> &[ReverseEngineeringCapture] {
+    pub(super) fn captures(&self) -> &[ReverseEngineeringCapture] {
         match self {
             Self::OpticalFlow(r) => &r.captures,
             Self::GlobalMotion(r) => &r.captures,
@@ -67,23 +71,75 @@ impl SavedResult {
             Self::Shots(r) => &r.captures,
             Self::CameraMoves(r) => &r.captures,
             Self::Features(r) => &r.captures,
+            Self::Look(r) => &r.captures,
+            Self::Sound(r) => &r.captures,
         }
     }
 }
-const COMPONENTS: [(&str, &str, bool); 12] = [
-    ("camera2d", "2D camera", true),
-    ("camera3d", "3D camera", false),
-    ("shots", "Shots & look", true),
-    ("look", "Look", false),
-    ("dialogue", "Dialogue", false),
-    ("music", "Music", false),
-    ("soundEffects", "Sound effects", false),
-    ("script", "Script", false),
-    ("figureMovements", "Figure movements", false),
-    ("objectMovements", "Object movements", false),
-    ("textTitles", "Text & titles", false),
-    ("effectsTransitions", "Effects & transitions", false),
+const COMPONENTS: [(&str, &str, &str, bool); 10] = [
+    ("camera2d", "2D camera", "Pan, zoom and roll of the picture, as Motion keyframes and a camera file", true),
+    ("camera3d", "3D camera", "Camera position and rotation in depth", false),
+    ("shots", "Shots & look", "Cuts, held frames and the look of each shot", true),
+    ("look", "Look", "Tone, colour, palette, vignette and grain of each shot, as a reusable grade", true),
+    ("sound", "Sound", "Loudness, speech, music, effects, tempo, beats on cuts and dialogue lines per shot", true),
+    ("script", "Script", "The reconstructed script", false),
+    ("figureMovements", "Figure movements", "How people move through the frame", false),
+    ("objectMovements", "Object movements", "How objects move through the frame", false),
+    ("textTitles", "Text & titles", "Text, titles and their animation", false),
+    ("effectsTransitions", "Effects & transitions", "Effects and transitions as presets", false),
 ];
+/// Tool cards: a fixed inner width so their text wraps inside the card, laid out in rows of as
+/// many cards as the column fits (egui's wrapping layout would otherwise shrink later cards).
+const CARD_INNER_W: f32 = 196.0;
+const CARD_OUTER_W: f32 = CARD_INNER_W + 26.0;
+const CARD_MIN_H: f32 = 96.0;
+const CARD_GAP: f32 = 10.0;
+
+fn tool_card(app: &mut FilmcraftApp, ui: &mut egui::Ui, id: &str, title: &str, description: &str, implemented: bool, has_video: bool) {
+    let state = &app.ui.panels.reverse_engineering;
+    let saved = state.saved_results.iter().any(|r| r.tool() == id && super::reverse_engineering::captures_are_current(app, r.captures()));
+    let ready = implemented && tool_ready(app, id);
+    let enabled = implemented && has_video && state.range_mode;
+    let (badge, color) = if !implemented {
+        ("Coming soon", egui::Color32::from_gray(90))
+    } else if saved {
+        ("Saved", egui::Color32::from_rgb(40, 130, 90))
+    } else if ready {
+        ("Analysed", egui::Color32::from_rgb(40, 130, 90))
+    } else {
+        ("Ready", egui::Color32::from_rgb(70, 100, 150))
+    };
+    let stroke = if ready || saved { egui::Stroke::new(1.5, app.tokens.accent) } else { egui::Stroke::new(1.0, app.tokens.separator) };
+    let text = if enabled { app.tokens.text } else { app.tokens.text_faint };
+    let frame = egui::Frame::group(ui.style()).stroke(stroke).inner_margin(egui::Margin::symmetric(12, 10)).show(ui, |ui| {
+        ui.set_width(CARD_INNER_W);
+        ui.set_max_width(CARD_INNER_W);
+        ui.set_min_height(CARD_MIN_H);
+        ui.vertical(|ui| {
+            ui.spacing_mut().item_spacing.y = 6.0;
+            ui.add(egui::Label::new(egui::RichText::new(title).strong().size(14.0).color(text)).wrap());
+            ui.add(egui::Label::new(egui::RichText::new(description).size(11.5).color(app.tokens.text_faint)).wrap());
+            ui.add_space(2.0);
+            egui::Frame::new().fill(color).corner_radius(6.0).inner_margin(egui::Margin::symmetric(7, 2)).show(ui, |ui| {
+                ui.add(egui::Label::new(egui::RichText::new(badge).color(egui::Color32::WHITE).size(10.5)).extend());
+            });
+        });
+    });
+    let response = ui.interact(frame.response.rect, egui::Id::new(("re-tool-card", id)), egui::Sense::click());
+    app.auto.add(&format!("reverseEngineering.tool.{id}"), response.rect, title);
+    if enabled {
+        if response.hovered() {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+        }
+        if response.clicked() {
+            invoke(app, ui.ctx(), "reverseEngineering.chooseTool", json!({"tool":id}));
+        }
+    } else if !implemented {
+        response.on_hover_text("Coming soon");
+    } else if !has_video {
+        response.on_hover_text("Select a video clip in the timeline first");
+    }
+}
 const EVIDENCE: [(&str, &str, bool); 8] = [
     ("opticalFlow", "SEA-RAFT flow", true),
     ("globalMotion", "Global image motion", true),
@@ -116,7 +172,9 @@ fn tool_button(app: &mut FilmcraftApp, ui: &mut egui::Ui, id: &str, title: &str,
         response.on_disabled_hover_text("Select a video clip in the timeline first");
     }
 }
-const TOOL_IDS: [&str; 11] = [
+const TOOL_IDS: [&str; 13] = [
+    "look",
+    "sound",
     "opticalFlow",
     "globalMotion",
     "localMotion",
@@ -142,6 +200,8 @@ fn tool_ready(app: &FilmcraftApp, tool: &str) -> bool {
         "shots" => super::reverse_shots::current(app),
         "cameraMoves" => super::reverse_camera::current(app),
         "camera2d" => super::reverse_camera2d::current(app),
+        "look" => super::reverse_look::current(app),
+        "sound" => super::reverse_sound::current(app),
         _ => false,
     }
 }
@@ -188,6 +248,12 @@ pub(super) fn results_visible(app: &FilmcraftApp, ctx: &egui::Context) -> bool {
     }
     if app.ui.panels.reverse_engineering.active_tool == "camera2d" {
         return app.ui.panels.reverse_engineering.range_mode && !super::reverse_camera2d::is_running(ctx) && super::reverse_camera2d::current(app);
+    }
+    if app.ui.panels.reverse_engineering.active_tool == "look" {
+        return app.ui.panels.reverse_engineering.range_mode && !super::reverse_look::is_running(ctx) && super::reverse_look::current(app);
+    }
+    if app.ui.panels.reverse_engineering.active_tool == "sound" {
+        return app.ui.panels.reverse_engineering.range_mode && !super::reverse_sound::is_running(ctx) && super::reverse_sound::current(app);
     }
     if !app.ui.panels.reverse_engineering.range_mode || is_running(ctx) || super::reverse_motion::is_running(ctx) {
         return false;
@@ -339,7 +405,7 @@ fn persist(path: &std::path::Path, results: &[SavedResult]) -> Result<(), String
     }
     Ok(())
 }
-fn restore_saved(app: &mut FilmcraftApp, ctx: &egui::Context) {
+pub(super) fn restore_saved(app: &mut FilmcraftApp, ctx: &egui::Context) {
     let Some(path) = saved_path(app) else {
         return;
     };
@@ -362,7 +428,8 @@ fn restore_saved(app: &mut FilmcraftApp, ctx: &egui::Context) {
             return Err("Unsupported saved-results version".into());
         }
         let results: Vec<SavedResult> = serde_json::from_value(value.get("results").cloned().ok_or("Missing saved results")?).map_err(|e| e.to_string())?;
-        if results.len() > 16 || results.iter().any(|r| !matches!(r.tool(), "trajectories" | "objectMasks" | "shots" | "camera2d") && r.captures().len() > 300)
+        if results.len() > 16
+            || results.iter().any(|r| !matches!(r.tool(), "trajectories" | "objectMasks" | "shots" | "camera2d" | "look") && r.captures().len() > 300)
         {
             return Err("Saved-result limits exceeded".into());
         }
@@ -386,6 +453,8 @@ pub fn command(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, params: &V
         || super::reverse_motion::is_running(ctx)
         || (super::reverse_tracking::is_running(ctx) || super::reverse_sam::is_running(ctx))
         || super::reverse_shots::is_running(ctx)
+        || super::reverse_look::is_running(ctx)
+        || super::reverse_sound::is_running(ctx)
         || super::reverse_camera2d::is_running(ctx)
     {
         return Err("Cancel the running analysis before changing tools or results".into());
@@ -449,6 +518,52 @@ pub fn command(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, params: &V
             }
             ctx.request_repaint();
             return Ok(json!({"tool":tool}));
+        }
+        if tool == "look" {
+            app.ui.panels.reverse_engineering.active_tool = tool.into();
+            if !super::reverse_look::current(app) {
+                let saved = app.ui.panels.reverse_engineering.saved_results.iter().find_map(|r| match r {
+                    SavedResult::Look(report)
+                        if super::reverse_engineering::captures_are_current(app, &report.captures)
+                            && report.project_revision == app.session.revision
+                            && !report.shots.is_empty() =>
+                    {
+                        Some(report.clone())
+                    }
+                    _ => None,
+                });
+                if let Some(report) = saved {
+                    let state = &mut app.ui.panels.reverse_engineering;
+                    state.look_palette_size = report.palette_size;
+                    state.look_max_samples = report.max_samples;
+                    state.look_report = Some(report);
+                }
+            }
+            ctx.request_repaint();
+            return Ok(json!({"tool":tool,"analysis":if super::reverse_look::current(app) { "current" } else { "notRun" }}));
+        }
+        if tool == "sound" {
+            app.ui.panels.reverse_engineering.active_tool = tool.into();
+            if !super::reverse_sound::current(app) {
+                let saved = app.ui.panels.reverse_engineering.saved_results.iter().find_map(|r| match r {
+                    SavedResult::Sound(report)
+                        if super::reverse_engineering::captures_are_current(app, &report.captures)
+                            && report.project_revision == app.session.revision
+                            && !report.shots.is_empty()
+                            && report.options.analysis.validate().is_ok() =>
+                    {
+                        Some(report.clone())
+                    }
+                    _ => None,
+                });
+                if let Some(report) = saved {
+                    let state = &mut app.ui.panels.reverse_engineering;
+                    state.sound_options = report.options.clone();
+                    state.sound_report = Some(report);
+                }
+            }
+            ctx.request_repaint();
+            return Ok(json!({"tool":tool,"analysis":if super::reverse_sound::current(app) { "current" } else { "notRun" }}));
         }
         if tool == "camera2d" {
             app.ui.panels.reverse_engineering.active_tool = tool.into();
@@ -789,6 +904,14 @@ pub fn command(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, params: &V
             }
             "cameraMoves" => app.ui.panels.reverse_engineering.camera_moves = None,
             "camera2d" => app.ui.panels.reverse_engineering.camera2d_report = None,
+            "look" => {
+                app.ui.panels.reverse_engineering.look_report = None;
+                app.ui.panels.reverse_engineering.look_selected = 0;
+            }
+            "sound" => {
+                app.ui.panels.reverse_engineering.sound_report = None;
+                app.ui.panels.reverse_engineering.sound_selected = 0;
+            }
             _ => return Err("Choose an implemented tool".into()),
         };
         app.ui.status = "Deleted this tool result for the selected range".into();
@@ -826,6 +949,12 @@ pub fn command(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, params: &V
         }
         "camera2d" if super::reverse_camera2d::current(app) => {
             SavedResult::Features(app.ui.panels.reverse_engineering.camera2d_report.clone().ok_or("Detect feature points first")?)
+        }
+        "look" if super::reverse_look::current(app) => {
+            SavedResult::Look(app.ui.panels.reverse_engineering.look_report.clone().ok_or("Analyse the look first")?)
+        }
+        "sound" if super::reverse_sound::current(app) => {
+            SavedResult::Sound(app.ui.panels.reverse_engineering.sound_report.clone().ok_or("Analyse the sound first")?)
         }
         _ => return Err("Run the selected tool for the current range first".into()),
     };
@@ -893,6 +1022,8 @@ fn status(app: &FilmcraftApp, tool: &str) -> String {
         (Some(SavedResult::Shots(saved)), "shots") => state.shots.as_ref() == Some(saved),
         (Some(SavedResult::CameraMoves(saved)), "cameraMoves") => state.camera_moves.as_ref() == Some(saved),
         (Some(SavedResult::Features(saved)), "camera2d") => state.camera2d_report.as_ref() == Some(saved),
+        (Some(SavedResult::Look(saved)), "look") => state.look_report.as_ref() == Some(saved),
+        (Some(SavedResult::Sound(saved)), "sound") => state.sound_report.as_ref() == Some(saved),
         _ => false,
     };
     if ready && same {
@@ -921,13 +1052,16 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui) {
         ui.label("2. Components: each one extracts that part of the scene as something you can save and reuse");
         let has_video = super::reverse_engineering::selected_source(app).is_some();
         let label_width = (ui.available_width() - 24.0).max(1.0);
-        ui.horizontal_wrapped(|ui| {
-            ui.spacing_mut().item_spacing = egui::vec2(8.0, 8.0);
-            ui.spacing_mut().button_padding = egui::vec2(12.0, 8.0);
-            for (id, title, implemented) in COMPONENTS {
-                tool_button(app, ui, id, title, implemented, has_video, label_width);
-            }
-        });
+        let per_row = (((ui.available_width() + CARD_GAP) / (CARD_OUTER_W + CARD_GAP)).floor() as usize).max(1);
+        for row in COMPONENTS.chunks(per_row) {
+            ui.horizontal_top(|ui| {
+                ui.spacing_mut().item_spacing = egui::vec2(CARD_GAP, CARD_GAP);
+                for (id, title, description, implemented) in row {
+                    tool_card(app, ui, id, title, description, *implemented, has_video);
+                }
+            });
+            ui.add_space(CARD_GAP);
+        }
         ui.add_space(6.0);
         let header = egui::CollapsingHeader::new("Evidence").id_salt("reverse-evidence").default_open(false).show(ui, |ui| {
             ui.label("Raw analysis layers the components build on; inspect and export them as before.");
@@ -952,12 +1086,22 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui) {
         || super::reverse_motion::is_running(ui.ctx())
         || (super::reverse_tracking::is_running(ui.ctx()) || super::reverse_sam::is_running(ui.ctx()))
         || super::reverse_shots::is_running(ui.ctx())
+        || super::reverse_look::is_running(ui.ctx())
+        || super::reverse_sound::is_running(ui.ctx())
         || super::reverse_camera2d::is_running(ui.ctx());
-    let response = ui.add_enabled(!busy, egui::Button::new("← Tool menu"));
-    app.auto.add("reverseEngineering.tool.back", response.rect, "Back to tool menu");
-    if response.clicked() {
-        invoke(app, ui.ctx(), "reverseEngineering.chooseTool", json!({"tool":"menu"}));
-    }
+    ui.horizontal_wrapped(|ui| {
+        let response = ui.add_enabled(!busy, egui::Button::new("← Tools"));
+        app.auto.add("reverseEngineering.tool.back", response.rect, "Back to tool menu");
+        if response.clicked() {
+            invoke(app, ui.ctx(), "reverseEngineering.chooseTool", json!({"tool":"menu"}));
+        }
+        let text = status(app, &tool);
+        let color = if text.starts_with("Saved") || text.starts_with("Computed") { egui::Color32::from_rgb(40, 130, 90) } else { egui::Color32::from_gray(90) };
+        let response = egui::Frame::new().fill(color).corner_radius(6.0).inner_margin(egui::Margin::symmetric(8, 2)).show(ui, |ui| {
+            ui.label(egui::RichText::new(&text).color(egui::Color32::WHITE).size(11.0));
+        });
+        app.auto.add("reverseEngineering.status", response.response.rect, &text);
+    });
     if tool == "opticalFlow" {
         super::reverse_motion::show(app, ui);
     } else if tool == "globalMotion" {
@@ -1071,9 +1215,6 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui) {
     if tool == "cameraMoves" {
         super::reverse_camera::show(app, ui);
     }
-    if tool == "camera2d" {
-        super::reverse_camera2d::show(app, ui);
-    }
     if tool == "motionOverTime" {
         super::reverse_time::show(app, ui);
     }
@@ -1092,18 +1233,31 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui) {
         && (tool != "objectMasks" || super::reverse_sam::current(app))
         && (tool != "shots" || super::reverse_shots::current(app))
         && (tool != "camera2d" || super::reverse_camera2d::current(app))
+        && (tool != "look" || super::reverse_look::current(app))
+        && (tool != "sound" || super::reverse_sound::current(app))
     {
-        ui.horizontal_wrapped(|ui| {
-            for (id, label) in [("saveToolResult", "Save result"), ("deleteToolResult", "Delete result"), ("exportTool", "Export this tool")] {
-                let response = ui.button(label);
-                app.auto.add(&format!("reverseEngineering.{id}"), response.rect, label);
-                if response.clicked() {
-                    invoke(app, ui.ctx(), &format!("reverseEngineering.{id}"), json!({}));
-                }
-            }
-        });
-        ui.label(status(app, &tool));
+        result_actions(app, ui, &tool, true);
     }
+}
+
+pub(super) fn result_actions(app: &mut FilmcraftApp, ui: &mut egui::Ui, tool: &str, with_raw_export: bool) {
+    ui.horizontal_wrapped(|ui| {
+        let mut buttons = vec![
+            ("saveToolResult", "Save result", "Keep this result with the project so it is restored next time this range is opened"),
+            ("deleteToolResult", "Delete result", "Forget the saved result for this tool and range"),
+        ];
+        if with_raw_export {
+            buttons.push(("exportTool", "Export this tool", "Write this tool's complete result as a JSON file"));
+        }
+        for (id, label, hint) in buttons {
+            let response = ui.button(label);
+            app.auto.add(&format!("reverseEngineering.{id}"), response.rect, hint);
+            if response.clicked() {
+                invoke(app, ui.ctx(), &format!("reverseEngineering.{id}"), json!({}));
+            }
+        }
+        ui.label(egui::RichText::new(status(app, tool)).color(app.tokens.text_faint));
+    });
 }
 pub(super) fn caption(app: &FilmcraftApp, ui: &mut egui::Ui, index: usize) {
     let Some(result) = app.ui.panels.reverse_engineering.global_motion.as_ref().and_then(|r| r.pairs.get(index)) else {
@@ -1188,9 +1342,80 @@ fn shots_for_brief(app: &FilmcraftApp) -> Option<super::reverse_shots::ShotRepor
         _ => None,
     })
 }
+fn sound_for_brief(app: &FilmcraftApp, shots: &super::reverse_shots::ShotReport) -> Option<super::reverse_sound::SoundReport> {
+    let state = &app.ui.panels.reverse_engineering;
+    let report = if super::reverse_sound::current(app) {
+        state.sound_report.clone()
+    } else {
+        state.saved_results.iter().find_map(|r| match r {
+            SavedResult::Sound(report) if report.captures == shots.captures && !report.shots.is_empty() => Some(report.clone()),
+            _ => None,
+        })
+    };
+    report.filter(|r| r.captures == shots.captures && r.analysis.seconds.is_finite() && r.analysis.seconds >= 0.0)
+}
+fn sound_brief(
+    report: &super::reverse_sound::SoundReport,
+    shots: &super::reverse_shots::ShotReport,
+    frame: filmcraft_time::Tick,
+) -> filmcraft_vision::brief::SoundBrief {
+    use filmcraft_sound::SegmentKind;
+    use filmcraft_vision::brief::{BeatCuts, DialogueLine, ShotSound, SoundBrief, SoundShare};
+    let shares = |s: &filmcraft_sound::Shares| -> Vec<SoundShare> {
+        [SegmentKind::Speech, SegmentKind::Music, SegmentKind::Effects, SegmentKind::Ambience, SegmentKind::Silence]
+            .iter()
+            .map(|k| SoundShare { kind: k.label().into(), share: s.get(*k) })
+            .collect()
+    };
+    let seconds = |tick: i64| (tick.saturating_sub(report.start_tick)) as f64 / filmcraft_time::TICKS_PER_SECOND as f64;
+    let a = &report.analysis;
+    let mut lines_left = filmcraft_vision::brief::MAX_DIALOGUE_LINES;
+    let shots_sound = shots
+        .shots
+        .iter()
+        .take(filmcraft_vision::brief::MAX_SHOTS)
+        .filter_map(|shot| {
+            let start = seconds(shots.captures.get(shot.start_frame)?.timeline_time.0);
+            let end = seconds(shots.captures.get(shot.end_frame)?.timeline_time.0.saturating_add(frame.0));
+            let sound = filmcraft_sound::range_sound(a, start, end);
+            let lines: Vec<DialogueLine> = report
+                .dialogue
+                .iter()
+                .filter(|l| l.start_seconds >= start && l.start_seconds < end)
+                .take(lines_left)
+                .map(|l| DialogueLine { speaker: l.speaker, start_seconds: l.start_seconds, end_seconds: l.end_seconds, text: l.text.clone() })
+                .collect();
+            lines_left = lines_left.saturating_sub(lines.len());
+            Some(ShotSound {
+                shot_index: shot.index,
+                shares: shares(&sound.shares),
+                dominant: sound.dominant.label().into(),
+                mean_lufs: sound.mean_lufs,
+                beats: sound.beats,
+                lines,
+            })
+        })
+        .collect();
+    SoundBrief {
+        analyzer: report.analyzer.clone(),
+        seconds: a.seconds,
+        integrated_lufs: a.loudness.integrated_lufs,
+        range_lu: a.loudness.range_lu,
+        true_peak_dbtp: a.loudness.true_peak_dbtp,
+        shares: shares(&a.shares),
+        tempo_bpm: a.tempo.as_ref().map(|t| t.bpm),
+        tempo_confidence: a.tempo.as_ref().map(|t| t.confidence),
+        beats: a.tempo.as_ref().map_or(0, |t| t.beats.len()),
+        cuts_on_beats: report.cuts_on_beats.as_ref().map(|c| BeatCuts { total: c.total, on_beat: c.on_beat, tolerance_seconds: c.tolerance_seconds }),
+        dialogue_lines: report.dialogue.len(),
+        dialogue_skipped: report.dialogue_skipped.clone(),
+        shots: shots_sound,
+    }
+}
 fn export_brief(app: &mut FilmcraftApp, params: &Value) -> Result<Value, String> {
     use filmcraft_vision::brief::{BriefInput, ObjectPresence};
     let shots = shots_for_brief(app).ok_or("Run Shots & look for this range before exporting a brief")?;
+    let sound = sound_for_brief(app, &shots);
     let state = &app.ui.panels.reverse_engineering;
     let camera = if super::reverse_camera::current(app) {
         state.camera_moves.clone()
@@ -1248,6 +1473,9 @@ fn export_brief(app: &mut FilmcraftApp, params: &Value) -> Result<Value, String>
     if let Some(masks) = masks.as_ref() {
         limitations.extend(masks.limitations.iter().cloned());
     }
+    if let Some(sound) = sound.as_ref() {
+        limitations.extend(sound.limitations.iter().cloned());
+    }
     limitations
         .push("This brief is a reconstruction from measured evidence and user labels; it is not the original creator's intent, script or prompt.".into());
     let input = BriefInput {
@@ -1261,6 +1489,7 @@ fn export_brief(app: &mut FilmcraftApp, params: &Value) -> Result<Value, String>
         camera: camera.as_ref().map(|c| c.summary.segments.clone()),
         objects,
         notes: Vec::new(),
+        sound: sound.as_ref().map(|s| sound_brief(s, &shots, rate.frame_duration())),
         limitations,
     };
     let markdown = filmcraft_vision::brief::markdown(&input, shots.ticks_per_second)?;
@@ -1277,7 +1506,9 @@ fn export_brief(app: &mut FilmcraftApp, params: &Value) -> Result<Value, String>
     std::fs::write(&path, markdown.as_bytes()).map_err(|e| format!("Could not export brief: {e}"))?;
     std::fs::write(&json_path, bytes).map_err(|e| format!("Could not export brief data: {e}"))?;
     app.ui.status = format!("Exported {path} and {}", json_path.display());
-    Ok(json!({"path":path,"jsonPath":json_path,"shots":input.shots.len(),"objects":input.objects.len(),"camera":input.camera.is_some()}))
+    Ok(
+        json!({"path":path,"jsonPath":json_path,"shots":input.shots.len(),"objects":input.objects.len(),"camera":input.camera.is_some(),"sound":input.sound.is_some()}),
+    )
 }
 pub(super) fn device_controls(app: &mut FilmcraftApp, ui: &mut egui::Ui, tracking: bool) {
     use filmcraft_vision::execution::Device;

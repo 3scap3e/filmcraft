@@ -55,6 +55,14 @@ pub(crate) fn commands() -> Vec<CommandSpec> {
         ),
         query("media.colorInfo", "Media Colour Info", r#"{"item":id}"#, color_info),
         spec("lut.import", "Import LUT…", &[], r#"{"path":str,"name":str?}"#, always, import),
+        spec(
+            "lut.add",
+            "Add LUT",
+            &[],
+            r#"{"name":str,"text":str (.cube or .3dl contents),"format":"cube"|"3dl"?} — adds a generated LUT to the project library"#,
+            always,
+            add,
+        ),
         query("lut.list", "List LUTs", "{}", list),
         spec("lut.remove", "Remove LUT", &[], r#"{"id":str}"#, always, remove),
         query("lut.export", "Export LUT", r#"{"lut":"lib:<id>"|"builtin:<id>","path":str,"format":"cube"|"3dl"?}"#, export),
@@ -116,6 +124,33 @@ fn import_lut(s: &mut Session, path: &str, name: Option<&str>) -> Result<(String
 fn import(s: &mut Session, p: &Value) -> Result<Value> {
     let path = str_p(p, "path").ok_or_else(|| bad("lut.import", "need `path`"))?.to_string();
     Ok(import_lut(s, &path, str_p(p, "name"))?.1)
+}
+
+const MAX_LUT_TEXT_BYTES: usize = 64 * 1024 * 1024;
+
+fn add(s: &mut Session, p: &Value) -> Result<Value> {
+    let name: String = str_p(p, "name").filter(|n| !n.trim().is_empty()).ok_or_else(|| bad("lut.add", "need `name`"))?.chars().take(200).collect();
+    let text = str_p(p, "text").ok_or_else(|| bad("lut.add", "need `text`"))?;
+    if text.len() > MAX_LUT_TEXT_BYTES {
+        return Err(bad("lut.add", "LUT text is larger than 64 MB"));
+    }
+    let fmt = match str_p(p, "format").unwrap_or("cube") {
+        "cube" => LutFormat::Cube,
+        "3dl" => LutFormat::ThreeDl,
+        other => return Err(bad("lut.add", format!("unknown LUT format `{other}`"))),
+    };
+    let lut = Lut::parse(text, Some(fmt)).map_err(|e| bad("lut.add", e))?;
+    if let Some(l) = s.project.luts.iter().find(|l| *l.text == *text) {
+        return Ok(json!({"id": l.id, "ref": format!("lib:{}", l.id), "name": l.name, "reused": true}));
+    }
+    let info = json!({"size3d": lut.cube.as_ref().map(|c| c.size), "size1d": lut.shaper.as_ref().map(|c| c.size()), "title": lut.title});
+    let mut id = String::new();
+    s.edit("Add LUT", |pr, _| {
+        id = format!("lut{}", pr.alloc_id());
+        pr.luts.push(ProjectLut { id: id.clone(), name: name.clone(), source_path: None, format: fmt.extension().into(), text: text.into() });
+        Ok(())
+    })?;
+    Ok(json!({"id": id, "ref": format!("lib:{id}"), "name": name, "lut": info}))
 }
 
 fn list(s: &mut Session, _: &Value) -> Result<Value> {

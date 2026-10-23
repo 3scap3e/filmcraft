@@ -389,6 +389,24 @@ impl LabelPrefs {
     }
 }
 
+/// Settings ▸ Generate (AI video clips onto the timeline).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct GeneratePrefs {
+    /// Reactor API key (`rk_…`); empty = use the `REACTOR_API_KEY` environment variable.
+    pub reactor_api_key: String,
+    /// Clip length the Generate panel starts with, in seconds.
+    pub default_seconds: f64,
+    /// Insert (ripple) the generated clip at its position instead of overwriting.
+    pub insert: bool,
+}
+
+impl Default for GeneratePrefs {
+    fn default() -> Self {
+        Self { reactor_api_key: String::new(), default_seconds: 8.0, insert: false }
+    }
+}
+
 /// Settings ▸ Media Analysis & Transcription.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
@@ -598,6 +616,8 @@ pub enum Kind {
     },
     /// Free text.
     Text,
+    /// Free text shown masked (an API key); never logged.
+    Secret,
     /// A folder; empty = the default location.
     Path,
     /// `#rrggbb`.
@@ -1017,6 +1037,26 @@ static CATEGORIES: &[Category] = &[
                     b("mediaAnalysis.languageAutoDetect", "Enable language auto-detection", true),
                     f("mediaAnalysis.defaultLanguage", "Default language", Kind::Choice(LANGUAGES), true),
                     f("mediaAnalysis.whisperModel", "Speech model", Kind::Choice(MODELS), true),
+                ],
+            ),
+        ],
+    },
+    Category {
+        id: "generate",
+        title: "Generate",
+        rows: &[
+            Row::Note(
+                "Generate video clips with an AI model straight onto the timeline (Window ▸ Generate). The API key stays in your preferences and is sent only to the provider.",
+            ),
+            Row::Group(
+                "Reactor (FastH3)",
+                &[
+                    f("generate.reactorApiKey", "API key", Kind::Secret, true),
+                    Row::Note(
+                        "Keys come from reactor.inc ▸ Account ▸ API keys. A session is billed per second while the clip builds and plays back (about $0.0125 per second, roughly twice the clip's length).",
+                    ),
+                    f("generate.defaultSeconds", "Default clip length", float(5.167, 14.375, 3, "s"), true),
+                    b("generate.insert", "Insert at the position (ripple) instead of overwriting", true),
                 ],
             ),
         ],
@@ -1506,6 +1546,7 @@ fn kind_json(k: Kind) -> Value {
         Kind::Choice(o) => json!({"type": "choice", "choices": o.iter().map(|(v, l)| json!({"value": v, "label": l})).collect::<Vec<_>>()}),
         Kind::Duration { unit_key } => json!({"type": "duration", "unitKey": unit_key}),
         Kind::Text => json!({"type": "text"}),
+        Kind::Secret => json!({"type": "secret"}),
         Kind::Path => json!({"type": "path"}),
         Kind::Color => json!({"type": "color"}),
         Kind::Font => json!({"type": "font"}),

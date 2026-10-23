@@ -50,6 +50,8 @@ filmcraft-render = { path = "crates/render" }
 filmcraft-gpu = { path = "crates/gpu" }
 filmcraft-scopes = { path = "crates/scopes" }
 filmcraft-vision = { path = "crates/vision" }
+filmcraft-sound = { path = "crates/sound" }
+filmcraft-generate = { path = "crates/generate" }
 filmcraft-export = { path = "crates/export" }
 filmcraft-format = { path = "crates/format" }
 filmcraft-engine = { path = "crates/engine" }

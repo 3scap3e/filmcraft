@@ -20,6 +20,7 @@ pub mod components;
 pub mod demo;
 pub mod essential_sound;
 pub mod export_tools;
+pub mod generate;
 pub mod graphic_templates;
 pub mod graphics;
 pub mod interchange;
@@ -390,6 +391,11 @@ pub struct Session {
     pub mask_jobs: Vec<masks::PendingTrack>,
     /// Scene Edit Detection jobs whose results are applied when they finish.
     pub scene_jobs: Vec<scene_detect::PendingScene>,
+    /// Generate jobs (AI video clips) whose MP4 is imported and placed when they finish.
+    pub generate_jobs: Vec<generate::PendingGeneration>,
+    /// The video generator `generate.video` uses (None = the one the build provides, Reactor
+    /// FastH3 with feature `reactor`). Hosts and tests install one here.
+    pub generator: Option<Arc<dyn filmcraft_generate::VideoGenerator>>,
     /// Effect presets (built-in + the user's, persisted in the data directory).
     pub presets: presets::PresetLibrary,
     /// Export presets (built-in + the user's, persisted in the data directory) and favourites.
@@ -493,6 +499,8 @@ impl Session {
             media_jobs: Vec::new(),
             mask_jobs: Vec::new(),
             scene_jobs: Vec::new(),
+            generate_jobs: Vec::new(),
+            generator: None,
             presets: Default::default(),
             export_presets: Default::default(),
             export_queue: Default::default(),
@@ -588,6 +596,7 @@ impl Session {
         proxies::poll(self);
         masks::poll(self);
         scene_detect::poll(self);
+        generate::poll(self);
         export_tools::pump_queue(self, false);
         panels::log_jobs(self);
         let Some(p) = self.persistence.as_mut() else { return };
@@ -1107,6 +1116,8 @@ mod export_tests;
 mod file_tests;
 #[cfg(test)]
 mod gap_selection_tests;
+#[cfg(test)]
+mod generate_tests;
 #[cfg(test)]
 mod image_sequence_tests;
 #[cfg(test)]

@@ -6,6 +6,7 @@ use super::{panel_state::ReverseEngineeringCapture, reverse_engineering};
 use crate::FilmcraftApp;
 use filmcraft_vision::{
     camera2d::{self, CameraFit, CameraOptions, CameraState, Fit, FitOptions, MovingRegion},
+    cinema,
     features::{self, Feature, Options},
     matching::{self, Match, MatchOptions},
     motion,
@@ -619,7 +620,39 @@ pub(super) fn command(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, par
     if id == "reverseEngineering.exportComponent" {
         return export_component(app, params);
     }
+    if id == "reverseEngineering.copyDescription" {
+        return copy_description(app, ctx, params);
+    }
     Err(format!("Unknown 2D camera command: {id}"))
+}
+
+/// The complete description of the camera (the camera file: measured path in sequence pixels,
+/// Motion keyframes, beats with their numbers and the rules behind the labels) for the current
+/// analysis or for an applied component (`{"id"}`), copied to the clipboard as JSON and
+/// returned. FilmCraft writes no prompt: whoever reads this decides how to say it.
+fn copy_description(app: &mut FilmcraftApp, ctx: &egui::Context, params: &Value) -> Result<Value, String> {
+    let (file, component) = match params.get("id").and_then(Value::as_u64) {
+        Some(id) => {
+            let sequence = app.session.active_sequence().ok_or("Open a sequence")?;
+            let component = sequence.components.iter().find(|c| c.id.0 == id).ok_or("No such component in the active sequence")?.clone();
+            (camera_file_from_component(&component)?, Some(component))
+        }
+        None => {
+            if !current(app) {
+                return Err("Analyse the range first; the result must be current".into());
+            }
+            let report = app.ui.panels.reverse_engineering.camera2d_report.clone().ok_or("No 2D camera result")?;
+            (camera_file(app, &report)?, None)
+        }
+    };
+    let mut description = serde_json::to_value(&file).map_err(|e| e.to_string())?;
+    if let (Some(object), Some(component)) = (description.as_object_mut(), component) {
+        object.insert("component".into(), serde_json::to_value(&component).map_err(|e| e.to_string())?);
+    }
+    let text = serde_json::to_string_pretty(&description).map_err(|e| e.to_string())?;
+    ctx.copy_text(text);
+    app.ui.status = format!("Camera description copied ({} frames)", file.path.len());
+    Ok(description)
 }
 
 /// A camera file rebuilt from an applied component's record: the samples hold centre
@@ -669,6 +702,7 @@ fn camera_file_from_component(c: &filmcraft_project::AppliedComponent) -> Result
             analyzer: format!("component:{}", c.name),
             completed_at_unix_ms: 0,
         },
+        cinematography: cinematography_of(&path, width, height, c.source.frame_rate),
         path,
         motion: keyframes,
     })
@@ -790,8 +824,31 @@ pub struct CameraFile {
     pub source: CameraSource,
     pub path: Vec<CameraFrame>,
     pub motion: Vec<motion::MotionKeyframe>,
+    /// The camera in cinema terms and as a prompt, derived from `path` and the evidence states.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cinematography: Option<cinema::Cinematography>,
 }
 pub const CAMERA_FORMAT: &str = "filmcraft.camera2d";
+
+/// The cinematography of a camera path given in sequence pixels (`path` as the file stores it).
+fn cinematography_of(path: &[CameraFrame], width: u32, height: u32, fps: f64) -> Option<cinema::Cinematography> {
+    if path.len() < 2 {
+        return None;
+    }
+    let states: Vec<CameraState> = path.iter().skip(1).map(|f| f.state.unwrap_or(CameraState::Unverified)).collect();
+    let trajectory: Vec<FramePose> = path
+        .iter()
+        .map(|f| FramePose {
+            frame: f.frame,
+            transform: f.transform,
+            displacement_px: f.displacement_px,
+            scale: f.scale,
+            rotation_degrees: f.rotation_degrees,
+            residual_px: f.residual_px,
+        })
+        .collect();
+    cinema::cinematography(&states, &trajectory, cinema::Frame { width, height, fps }, 1.0).ok()
+}
 const MAX_CAMERA_FILE_BYTES: u64 = 256 * 1024 * 1024;
 
 /// The current report as a camera component, with the path in sequence pixels.
@@ -836,6 +893,7 @@ fn camera_file(app: &FilmcraftApp, report: &FeatureReport) -> Result<CameraFile,
             analyzer: report.analyzer.clone(),
             completed_at_unix_ms: report.completed_at_unix_ms,
         },
+        cinematography: cinematography_of(&path, width, height, rate.as_f64()),
         path,
         motion: keyframes,
     })
@@ -1035,6 +1093,7 @@ fn apply_camera(app: &mut FilmcraftApp, params: &Value) -> Result<Value, String>
                     "source":{"sequence":file.source.sequence,"width":file.source.width,"height":file.source.height,"frameRate":file.source.frame_rate,
                         "startFrame":file.source.start_frame,"endFrame":file.source.end_frame,"file":file_path},
                     "samples":samples,
+                    "summary":file.cinematography.as_ref().map(|c| c.summary.clone()).unwrap_or_default(),
                 }),
             )
             .map_err(|e| e.to_string())?;
@@ -1077,23 +1136,8 @@ fn state_color(state: CameraState) -> egui::Color32 {
         CameraState::NoEvidence => egui::Color32::from_rgb(160, 50, 50),
     }
 }
-pub(super) fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui) {
-    ui.heading("2D camera · steps A–D: points, matches, camera per comparison, path");
-    ui.label("Every frame of the range: corners, matches, the camera motion shared by the whole frame with moving regions set apart, and the jointly solved camera path.");
-    if let Some(job) = ui.ctx().data(|d| d.get_temp::<Job>(job_id())) {
-        ui.spinner();
-        ui.label(format!("Analysing · frame {} / {}", job.progress.load(Ordering::Relaxed), job.total));
-        let response = ui.button("Cancel");
-        app.auto.add("reverseEngineering.cancelFeatures", response.rect, "Cancel 2D camera analysis");
-        if response.clicked() {
-            invoke(app, ui.ctx(), "reverseEngineering.cancelFeatures", json!({}));
-        }
-        return;
-    }
-    if let Err(e) = prepare(app) {
-        ui.label(e);
-        return;
-    }
+/// The 18 analysis parameters, under *Advanced*: changing any of them marks the result stale.
+fn advanced_options(app: &mut FilmcraftApp, ui: &mut egui::Ui) {
     let mut options = app.ui.panels.reverse_engineering.camera2d_options;
     let mut match_options = app.ui.panels.reverse_engineering.camera2d_match;
     let mut camera = app.ui.panels.reverse_engineering.camera2d_camera;
@@ -1195,43 +1239,387 @@ pub(super) fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui) {
                 "anchorGap":anchors.gap,"anchorStep":anchors.step,"anchorLongGap":anchors.long_gap}),
         );
     }
-    let is_current = current(app);
-    let count = app.ui.panels.reverse_engineering.camera2d_captures.len();
-    let response = ui.button(if is_current { format!("Analyse again ({count} frames)") } else { format!("Analyse all {count} frames") });
-    app.auto.add("reverseEngineering.runFeatures", response.rect, "Render every frame of the range, detect, match, fit the camera and solve the path");
+    let response = ui.button("Reset to defaults");
+    app.auto.add("reverseEngineering.camera2d.resetOptions", response.rect, "Put every analysis parameter back to its default");
     if response.clicked() {
-        invoke(app, ui.ctx(), "reverseEngineering.runFeatures", json!({}));
+        let (o, m, c, a) = (Options::default(), MatchOptions::default(), CameraOptions::default(), AnchorOptions::default());
+        invoke(
+            app,
+            ui.ctx(),
+            "reverseEngineering.setFeatureOptions",
+            json!({"maxPoints":o.max_points,"minDistance":o.min_distance,"threshold":o.threshold,"octaves":o.octaves,"analysisWidth":640,
+                "ratio":m.ratio,"crossCheck":m.cross_check,"maxDistancePx":m.max_distance_px,
+                "tolerancePx":c.fit.tolerance_px,"minInliers":c.fit.min_inliers,"minSupport":c.fit.min_support,
+                "minCoverageCells":c.min_coverage_cells,"minSpan":c.min_span,"maxRegions":c.max_regions,"staticPx":c.static_px,
+                "anchorGap":a.gap,"anchorStep":a.step,"anchorLongGap":a.long_gap}),
+        );
     }
-    let Some(report) = app.ui.panels.reverse_engineering.camera2d_report.clone().filter(|_| is_current) else {
-        if app.ui.panels.reverse_engineering.camera2d_report.is_some() {
-            ui.label("Options, range or project changed. Analyse again; the previous result is hidden.");
+}
+
+/// What the analysis found, in words: the phases of the camera path and how trustworthy they are.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Verdict {
+    pub headline: String,
+    pub quality: String,
+    /// A short note on the structure behind the headline ("3 beats"); empty without a path.
+    pub prompt: String,
+}
+
+fn seconds_of(frame: usize, rate: filmcraft_time::FrameRate) -> f64 {
+    (rate.tick_of(frame as i64) - rate.tick_of(0)).seconds()
+}
+
+/// Build the verdict from the per-comparison states and the solved path. `px_scale` converts
+/// analysis pixels to source pixels.
+pub fn verdict(states: &[CameraState], trajectory: &[FramePose], rate: filmcraft_time::FrameRate, px_scale: f64, size: [u32; 2]) -> Verdict {
+    if states.is_empty() || trajectory.len() != states.len() + 1 {
+        return Verdict { headline: "Not analysed yet".into(), quality: String::new(), prompt: String::new() };
+    }
+    let n = states.len();
+    let end_s = seconds_of(n, rate);
+    let frame = cinema::Frame { width: size[0], height: size[1], fps: rate.as_f64() };
+    let (headline, prompt) = match cinema::cinematography(states, trajectory, frame, px_scale) {
+        Ok(c) => (c.summary, format!("{} beats", c.beats.len())),
+        Err(e) => (format!("Camera path could not be described: {e}"), String::new()),
+    };
+    let solid = states.iter().filter(|s| matches!(s, CameraState::Static | CameraState::Moving)).count();
+    let gaps = states.iter().filter(|s| **s == CameraState::NoEvidence).count();
+    let doubtful: Vec<usize> = trajectory.iter().enumerate().filter(|(_, p)| p.residual_px > 2.0).map(|(i, _)| i).collect();
+    let mut quality = format!("{:.0} % of frames with solid evidence", 100.0 * solid as f64 / n as f64);
+    if doubtful.is_empty() {
+        quality.push_str(" · no doubtful frames");
+    } else {
+        let times: Vec<String> = doubtful.iter().take(3).map(|i| format!("{:.1} s", seconds_of(*i, rate))).collect();
+        quality.push_str(&format!(
+            " · {} doubtful frame{} ({}{})",
+            doubtful.len(),
+            if doubtful.len() == 1 { "" } else { "s" },
+            times.join(", "),
+            if doubtful.len() > 3 { ", …" } else { "" }
+        ));
+    }
+    if gaps > 0 {
+        quality.push_str(&format!(" · {gaps} frame{} without evidence", if gaps == 1 { "" } else { "s" }));
+    }
+    quality.push_str(&format!(" · {end_s:.1} s analysed"));
+    Verdict { headline, quality, prompt }
+}
+
+fn badge(ui: &mut egui::Ui, text: &str, fill: egui::Color32) -> egui::Response {
+    egui::Frame::new()
+        .fill(fill)
+        .corner_radius(6.0)
+        .inner_margin(egui::Margin::symmetric(8, 2))
+        .show(ui, |ui| {
+            ui.label(egui::RichText::new(text).color(egui::Color32::WHITE).size(11.0));
+        })
+        .response
+}
+
+/// Header shared by the tool pages: back, title, status badge, context on the right.
+fn header(app: &mut FilmcraftApp, ui: &mut egui::Ui, title: &str, status: (&str, egui::Color32), context: &str) {
+    let busy = is_running(ui.ctx());
+    ui.horizontal(|ui| {
+        let response = ui.add_enabled(!busy, egui::Button::new("← Tools"));
+        app.auto.add("reverseEngineering.tool.back", response.rect, "Back to tool menu");
+        if response.clicked() {
+            invoke(app, ui.ctx(), "reverseEngineering.chooseTool", json!({"tool":"menu"}));
         }
-        let selected = selected_video_clips(app).map(|c| c.len()).unwrap_or(0);
+        ui.heading(title);
+        let response = badge(ui, status.0, status.1);
+        app.auto.add("reverseEngineering.status", response.rect, status.0);
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            ui.label(egui::RichText::new(context).color(app.tokens.text_faint));
+        });
+    });
+}
+
+/// The 2D camera page: header, verdict, viewer with graphs, actions, Details and Advanced.
+pub(super) fn page(app: &mut FilmcraftApp, ui: &mut egui::Ui, bounds: egui::Rect) {
+    let mut child = ui.new_child(egui::UiBuilder::new().max_rect(bounds));
+    child.set_clip_rect(bounds.intersect(ui.clip_rect()));
+    child.style_mut().wrap_mode = Some(egui::TextWrapMode::Wrap);
+    egui::ScrollArea::vertical().auto_shrink([false, false]).id_salt("reverse-camera2d-page").show(&mut child, |ui| {
+        ui.set_width(bounds.width().max(1.0));
+        page_body(app, ui, bounds);
+    });
+}
+
+fn page_body(app: &mut FilmcraftApp, ui: &mut egui::Ui, bounds: egui::Rect) {
+    let running = ui.ctx().data(|d| d.get_temp::<Job>(job_id()));
+    let prepared = prepare(app);
+    let is_current = prepared.is_ok() && current(app);
+    let saved =
+        app.ui.panels.reverse_engineering.saved_results.iter().any(|r| r.tool() == "camera2d" && reverse_engineering::captures_are_current(app, r.captures()));
+    let has_report = app.ui.panels.reverse_engineering.camera2d_report.is_some();
+    let status = if running.is_some() {
+        ("Analysing…", egui::Color32::from_rgb(90, 110, 170))
+    } else if is_current && saved {
+        ("Analysed · saved", egui::Color32::from_rgb(40, 130, 90))
+    } else if is_current {
+        ("Analysed", egui::Color32::from_rgb(40, 130, 90))
+    } else if has_report {
+        ("Stale · analyse again", egui::Color32::from_rgb(170, 120, 40))
+    } else {
+        ("Not analysed", egui::Color32::from_gray(90))
+    };
+    let rate = app.session.active_sequence().map(|q| q.settings.frame_rate).unwrap_or_default();
+    let capture_count = app.ui.panels.reverse_engineering.camera2d_captures.len();
+    let context = {
+        let state = &app.ui.panels.reverse_engineering;
+        match state.camera2d_captures.first() {
+            Some(first) => format!("{} · frames {}–{} · {capture_count} frames · {:.3} fps", first.name, state.start_frame, state.end_frame, rate.as_f64()),
+            None => String::new(),
+        }
+    };
+    header(app, ui, "2D camera", status, &context);
+    if let Some(job) = running {
+        ui.horizontal(|ui| {
+            ui.spinner();
+            ui.label(format!("Analysing · frame {} / {}", job.progress.load(Ordering::Relaxed), job.total));
+            let response = ui.button("Cancel");
+            app.auto.add("reverseEngineering.cancelFeatures", response.rect, "Cancel 2D camera analysis");
+            if response.clicked() {
+                invoke(app, ui.ctx(), "reverseEngineering.cancelFeatures", json!({}));
+            }
+        });
+        return;
+    }
+    if let Err(e) = &prepared {
+        ui.label(e);
+    }
+    if let Some(error) = ui.ctx().data(|d| d.get_temp::<String>(egui::Id::new("reverse-tools-error"))) {
+        ui.colored_label(egui::Color32::LIGHT_RED, error);
+    }
+    let report = app.ui.panels.reverse_engineering.camera2d_report.clone().filter(|_| is_current);
+    let verdict = match &report {
+        Some(r) => {
+            let states: Vec<CameraState> = r.comparisons.iter().map(|c| c.state).collect();
+            let px_scale = f64::from(r.source_size[0].max(1)) / r.analysis_width.max(1) as f64;
+            verdict(&states, &r.trajectory, rate, px_scale, r.source_size)
+        }
+        None if has_report => Verdict {
+            headline: "Options, range or project changed: analyse again to see the camera.".into(),
+            quality: "The previous result is kept hidden until then.".into(),
+            prompt: String::new(),
+        },
+        None => Verdict {
+            headline: "Not analysed yet.".into(),
+            quality: format!("Analyse renders the {capture_count} frames of the range, finds the camera motion and solves its path."),
+            prompt: String::new(),
+        },
+    };
+    egui::Frame::group(ui.style()).inner_margin(egui::Margin::symmetric(12, 8)).show(ui, |ui| {
+        ui.set_width(ui.available_width());
+        let response = ui.label(egui::RichText::new(&verdict.headline).strong().size(15.0));
+        app.auto.add("reverseEngineering.verdict", response.rect, &verdict.headline);
+        let response = ui.label(egui::RichText::new(&verdict.quality).color(app.tokens.text_dim));
+        app.auto.add("reverseEngineering.quality", response.rect, &verdict.quality);
+        if !verdict.prompt.is_empty() {
+            ui.horizontal_wrapped(|ui| {
+                let response = ui.button("Copy description");
+                app.auto.add(
+                    "reverseEngineering.copyDescription",
+                    response.rect,
+                    "Copy the complete camera description as JSON: measured path, Motion keyframes, beats and the rules behind their labels",
+                );
+                if response.clicked() {
+                    invoke(app, ui.ctx(), "reverseEngineering.copyDescription", json!({}));
+                }
+                ui.label(
+                    egui::RichText::new(format!("{} · the words above are labels; the numbers and their rules travel in the description", verdict.prompt))
+                        .color(app.tokens.text_faint)
+                        .size(11.0),
+                );
+            });
+        }
+    });
+    ui.add_space(6.0);
+    let count = app.ui.panels.reverse_engineering.camera2d_captures.len();
+    let frame = app.ui.panels.reverse_engineering.camera2d_frame.min(count.saturating_sub(1));
+    actions_bar(app, ui, is_current, count, report.is_some());
+    ui.add_space(6.0);
+    let wide = bounds.width() >= 700.0;
+    let viewer_h = (bounds.height() * 0.42).clamp(150.0, 420.0);
+    if count > 0 {
+        if wide {
+            let gap = 12.0;
+            let left_w = ((bounds.width() - gap) * 0.62).max(1.0);
+            let right_w = (bounds.width() - gap - left_w).max(1.0);
+            ui.horizontal_top(|ui| {
+                ui.vertical(|ui| {
+                    ui.set_width(left_w);
+                    viewer_block(app, ui, egui::vec2(left_w, viewer_h), report.is_some());
+                });
+                ui.add_space(gap);
+                ui.vertical(|ui| {
+                    ui.set_width(right_w);
+                    graphs_block(app, ui, report.as_ref(), frame);
+                });
+            });
+        } else {
+            viewer_block(app, ui, egui::vec2(bounds.width().max(1.0), viewer_h), report.is_some());
+            graphs_block(app, ui, report.as_ref(), frame);
+        }
+    }
+    ui.add_space(6.0);
+    applied_components(app, ui);
+    if let Some(r) = &report
+        && app.ui.panels.reverse_engineering.details_open
+    {
+        egui::Frame::group(ui.style()).inner_margin(egui::Margin::symmetric(10, 6)).show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            details(app, ui, r, frame);
+        });
+    }
+    if app.ui.panels.reverse_engineering.advanced_open {
+        egui::Frame::group(ui.style()).inner_margin(egui::Margin::symmetric(10, 6)).show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            advanced_options(app, ui);
+        });
+    }
+}
+
+fn viewer_block(app: &mut FilmcraftApp, ui: &mut egui::Ui, size: egui::Vec2, has_report: bool) {
+    if has_report {
         ui.horizontal_wrapped(|ui| {
-            ui.label("Step E · camera component:");
-            let response = ui.add_enabled(selected > 0, egui::Button::new("Apply camera file…"));
+            for (id, label) in [("points", "Points"), ("matches", "Matches & regions"), ("difference", "Difference")] {
+                let response = ui.selectable_label(app.ui.panels.reverse_engineering.camera2d_view == id, label);
+                app.auto.add(&format!("reverseEngineering.camera2d.view.{id}"), response.rect, label);
+                if response.clicked() {
+                    invoke(app, ui.ctx(), "reverseEngineering.setFeatureView", json!({"view":id}));
+                }
+            }
+        });
+    }
+    result(app, ui, Some(size));
+    navigation(app, ui);
+}
+
+fn graphs_block(app: &mut FilmcraftApp, ui: &mut egui::Ui, report: Option<&FeatureReport>, frame: usize) {
+    let Some(report) = report else {
+        ui.label(egui::RichText::new("Camera path and evidence appear here after the analysis.").color(app.tokens.text_faint));
+        return;
+    };
+    ui.label(egui::RichText::new("Camera path").color(app.tokens.text_dim));
+    path_graph(app, ui, report, frame);
+    ui.label(egui::RichText::new("Evidence per frame").color(app.tokens.text_dim));
+    graph(app, ui, report, frame);
+    ui.add_space(4.0);
+    let px_scale = f64::from(report.source_size[0].max(1)) / report.analysis_width.max(1) as f64;
+    let mut lines: Vec<String> = Vec::new();
+    match frame.checked_sub(1).and_then(|p| report.comparisons.get(p)) {
+        Some(c) => {
+            let state = match c.state {
+                CameraState::Static => "Camera still",
+                CameraState::Moving => "Camera moving",
+                CameraState::Unverified => "Motion not verified",
+                CameraState::NoEvidence => "No camera evidence",
+            };
+            match &c.fit {
+                Fit::Estimated { fit } => lines.push(format!(
+                    "{state} · Δ {:.1}, {:.1} px · zoom {:.3} · {} of {} points agree",
+                    fit.center_displacement_px[0] * px_scale,
+                    fit.center_displacement_px[1] * px_scale,
+                    fit.scale,
+                    fit.inliers.len(),
+                    fit.tested
+                )),
+                Fit::Insufficient { pairs, .. } => lines.push(format!("{state} · {pairs} matches, too few or too concentrated")),
+            }
+            if !c.regions.is_empty() {
+                lines.push(format!("{} moving region{} set apart", c.regions.len(), if c.regions.len() == 1 { "" } else { "s" }));
+            }
+        }
+        None => lines.push("First frame of the range: the reference".into()),
+    }
+    if let Some(p) = report.trajectory.get(frame) {
+        lines.push(format!(
+            "Path so far: Δ {:.1}, {:.1} px · zoom {:.3} · roll {:.2}°{}",
+            p.displacement_px[0] * px_scale,
+            p.displacement_px[1] * px_scale,
+            p.scale,
+            p.rotation_degrees,
+            if p.residual_px > 2.0 { " · doubtful frame" } else { "" }
+        ));
+    }
+    egui::Frame::group(ui.style()).inner_margin(egui::Margin::symmetric(10, 6)).show(ui, |ui| {
+        ui.set_width(ui.available_width());
+        ui.label(egui::RichText::new(format!("This frame · {}", frame + 1)).color(app.tokens.text_dim));
+        let text = lines.join("\n");
+        let response = ui.label(&text);
+        app.auto.add("reverseEngineering.camera2d.thisFrame", response.rect, &text);
+    });
+}
+
+fn actions_bar(app: &mut FilmcraftApp, ui: &mut egui::Ui, is_current: bool, count: usize, has_report: bool) {
+    let selected = selected_video_clips(app).map(|c| c.len()).unwrap_or(0);
+    ui.horizontal_wrapped(|ui| {
+        if has_report {
+            let open = app.ui.panels.reverse_engineering.details_open;
+            let response = ui.selectable_label(open, if open { "▾ Details" } else { "▸ Details" });
+            app.auto.add("reverseEngineering.details", response.rect, "Every number behind the verdict");
+            if response.clicked() {
+                app.ui.panels.reverse_engineering.details_open = !open;
+            }
+        }
+        let open = app.ui.panels.reverse_engineering.advanced_open;
+        let response = ui.selectable_label(open, if open { "▾ Advanced" } else { "▸ Advanced" });
+        app.auto.add("reverseEngineering.advanced", response.rect, "Analysis parameters; the defaults suit most footage");
+        if response.clicked() {
+            app.ui.panels.reverse_engineering.advanced_open = !open;
+        }
+        ui.separator();
+        let response = ui
+            .add_enabled(count > 0, egui::Button::new(if is_current { format!("Analyse again ({count} frames)") } else { format!("Analyse {count} frames") }));
+        app.auto.add("reverseEngineering.runFeatures", response.rect, "Render every frame of the range, detect, match, fit the camera and solve the path");
+        if response.clicked() {
+            invoke(app, ui.ctx(), "reverseEngineering.runFeatures", json!({}));
+        }
+        if is_current && selected > 0 {
+            let response = ui.button(format!("Apply to {selected} selected clip{}", if selected == 1 { "" } else { "s" }));
+            app.auto.add(
+                "reverseEngineering.camera2d.apply",
+                response.rect,
+                "Write the camera path as Motion keyframes on the selected clips, frame 1 at each clip's start",
+            );
+            if response.clicked() {
+                invoke(app, ui.ctx(), "reverseEngineering.applyCamera", json!({"mode":"follow"}));
+            }
+            let response = ui.button("Stabilize selected");
+            app.auto.add(
+                "reverseEngineering.camera2d.stabilize",
+                response.rect,
+                "Write the inverse camera path as Motion keyframes at the analysed times, cancelling the camera motion",
+            );
+            if response.clicked() {
+                invoke(app, ui.ctx(), "reverseEngineering.applyCamera", json!({"mode":"stabilize","atTimeline":true}));
+            }
+        }
+        if is_current {
+            let response = ui.button("Export camera…");
+            app.auto.add("reverseEngineering.camera2d.exportCamera", response.rect, "Save the camera path and its Motion keyframes as a reusable camera file");
+            if response.clicked() {
+                invoke(app, ui.ctx(), "reverseEngineering.exportCamera", json!({}));
+            }
+        }
+        if selected > 0 {
+            let response = ui.button("Apply camera file…");
             app.auto.add("reverseEngineering.camera2d.applyFile", response.rect, "Apply a saved camera file to the selected clips");
             if response.clicked() {
                 invoke(app, ui.ctx(), "reverseEngineering.applyCamera", json!({"mode":"follow","file":true}));
             }
-            if selected == 0 {
-                ui.label("Select the video clips to apply a camera to.");
-            }
-        });
-        applied_components(app, ui);
-        return;
-    };
-    ui.separator();
-    ui.horizontal_wrapped(|ui| {
-        ui.label("View");
-        for (id, label) in [("points", "Points"), ("matches", "Matches & regions"), ("difference", "Difference")] {
-            let response = ui.selectable_label(app.ui.panels.reverse_engineering.camera2d_view == id, label);
-            app.auto.add(&format!("reverseEngineering.camera2d.view.{id}"), response.rect, label);
-            if response.clicked() {
-                invoke(app, ui.ctx(), "reverseEngineering.setFeatureView", json!({"view":id}));
-            }
+        } else {
+            ui.label(egui::RichText::new("Select video clips in the timeline to apply a camera.").color(app.tokens.text_faint));
         }
     });
+    if is_current {
+        super::reverse_tools::result_actions(app, ui, "camera2d", false);
+    }
+}
+
+/// Every number behind the verdict, for the selected frame.
+fn details(app: &mut FilmcraftApp, ui: &mut egui::Ui, report: &FeatureReport, frame: usize) {
     let frames = report.frames.len().max(1);
     let count_state = |s: CameraState| report.comparisons.iter().filter(|c| c.state == s).count();
     let summary = format!(
@@ -1251,40 +1639,6 @@ pub(super) fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui) {
     );
     let response = ui.label(&summary);
     app.auto.add("reverseEngineering.camera2d.summary", response.rect, &summary);
-    let selected = selected_video_clips(app).map(|c| c.len()).unwrap_or(0);
-    ui.horizontal_wrapped(|ui| {
-        ui.label("Step E · camera component:");
-        let response = ui.add_enabled(selected > 0, egui::Button::new(format!("Apply to {selected} selected clip{}", if selected == 1 { "" } else { "s" })));
-        app.auto.add(
-            "reverseEngineering.camera2d.apply",
-            response.rect,
-            "Write the camera path as Motion keyframes on the selected clips, frame 1 at each clip's start",
-        );
-        if response.clicked() {
-            invoke(app, ui.ctx(), "reverseEngineering.applyCamera", json!({"mode":"follow"}));
-        }
-        let response = ui.add_enabled(selected > 0, egui::Button::new("Stabilize selected"));
-        app.auto.add(
-            "reverseEngineering.camera2d.stabilize",
-            response.rect,
-            "Write the inverse camera path as Motion keyframes at the analysed times, cancelling the camera motion",
-        );
-        if response.clicked() {
-            invoke(app, ui.ctx(), "reverseEngineering.applyCamera", json!({"mode":"stabilize","atTimeline":true}));
-        }
-        let response = ui.button("Export camera…");
-        app.auto.add("reverseEngineering.camera2d.exportCamera", response.rect, "Save the camera path and its Motion keyframes as a reusable camera file");
-        if response.clicked() {
-            invoke(app, ui.ctx(), "reverseEngineering.exportCamera", json!({}));
-        }
-        let response = ui.add_enabled(selected > 0, egui::Button::new("Apply camera file…"));
-        app.auto.add("reverseEngineering.camera2d.applyFile", response.rect, "Apply a saved camera file to the selected clips");
-        if response.clicked() {
-            invoke(app, ui.ctx(), "reverseEngineering.applyCamera", json!({"mode":"follow","file":true}));
-        }
-    });
-    applied_components(app, ui);
-    let frame = app.ui.panels.reverse_engineering.camera2d_frame.min(report.frames.len().saturating_sub(1));
     if let Some(f) = report.frames.get(frame) {
         ui.label(format!("Selected frame {}: {} points · mean luma {:.3}", frame + 1, f.features.len(), f.mean_luma));
     }
@@ -1350,7 +1704,7 @@ pub(super) fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui) {
     }
     ui.label("Points: circle = scale, tick = orientation. Matches: green supports the camera, red does not; cyan boxes are moving regions. Difference: previous frame warped by the camera minus this frame.");
 }
-pub(super) fn controls(app: &mut FilmcraftApp, ui: &mut egui::Ui) {
+fn navigation(app: &mut FilmcraftApp, ui: &mut egui::Ui) {
     let count = app.ui.panels.reverse_engineering.camera2d_captures.len();
     if count == 0 {
         return;
@@ -1379,12 +1733,8 @@ pub(super) fn controls(app: &mut FilmcraftApp, ui: &mut egui::Ui) {
     });
     if let Some(capture) = app.ui.panels.reverse_engineering.camera2d_captures.get(frame).cloned() {
         let label = format!("Frame {} / {} · {}", frame + 1, count, reverse_engineering::timecode(app, &capture));
-        let response = ui.label(label);
+        let response = ui.label(egui::RichText::new(label).color(app.tokens.text_dim));
         app.auto.add("reverseEngineering.timecode", response.rect, "Exact timestamp of the displayed frame");
-    }
-    if let Some(report) = app.ui.panels.reverse_engineering.camera2d_report.clone().filter(|_| current(app)) {
-        graph(app, ui, &report, frame);
-        path_graph(app, ui, &report, frame);
     }
 }
 fn graph(app: &mut FilmcraftApp, ui: &mut egui::Ui, report: &FeatureReport, selected: usize) {
@@ -1448,10 +1798,12 @@ fn graph(app: &mut FilmcraftApp, ui: &mut egui::Ui, report: &FeatureReport, sele
             }
         }
     }
-    ui.label(format!(
-        "Top: points per frame (0–{}) · bottom: camera inliers per comparison (0–{}): blue static, green moving, amber not verified, red no evidence",
-        peak as usize, inlier_peak as usize
-    ));
+    ui.label(
+        egui::RichText::new(format!("points per frame (0–{}) above · blue still, green moving, amber not verified, red no evidence below", peak as usize))
+            .color(app.tokens.text_faint)
+            .size(11.0),
+    );
+    let _ = inlier_peak;
 }
 fn path_graph(app: &mut FilmcraftApp, ui: &mut egui::Ui, report: &FeatureReport, selected: usize) {
     let n = report.trajectory.len();
@@ -1505,9 +1857,11 @@ fn path_graph(app: &mut FilmcraftApp, ui: &mut egui::Ui, report: &FeatureReport,
             }
         }
     }
-    ui.label(format!("Camera path · blue Δx, green Δy (±{bound:.1} px) · amber zoom (±{:.3})", zoom_bound));
+    ui.label(egui::RichText::new(format!("blue Δx, green Δy (±{bound:.1} px) · amber zoom (±{:.3})", zoom_bound)).color(app.tokens.text_faint).size(11.0));
 }
-pub(super) fn result(app: &mut FilmcraftApp, ui: &mut egui::Ui) {
+/// The analysed frame with its overlay and the frame strip; `max_size` bounds the picture (the
+/// page gives it a fixed box, since it lives inside a scroll area).
+pub(super) fn result(app: &mut FilmcraftApp, ui: &mut egui::Ui, max_size: Option<egui::Vec2>) {
     let captures = app.ui.panels.reverse_engineering.camera2d_captures.clone();
     let frame = app.ui.panels.reverse_engineering.camera2d_frame.min(captures.len().saturating_sub(1));
     let report = app.ui.panels.reverse_engineering.camera2d_report.clone().filter(|_| current(app));
@@ -1522,7 +1876,7 @@ pub(super) fn result(app: &mut FilmcraftApp, ui: &mut egui::Ui) {
     match (report.as_ref().and_then(|r| r.frames.get(frame)), handle) {
         (Some(f), Some(handle)) => {
             let [w, h] = f.analyzed_size;
-            let available = egui::vec2(ui.available_width().max(1.0), (ui.available_height() - reserve).max(1.0));
+            let available = max_size.unwrap_or_else(|| egui::vec2(ui.available_width().max(1.0), (ui.available_height() - reserve).max(1.0)));
             let scale = (available.x / w.max(1) as f32).min(available.y / h.max(1) as f32);
             let size = egui::vec2(w as f32 * scale, h as f32 * scale);
             let response = ui.add(egui::Image::new((handle.id(), size)).sense(egui::Sense::hover()));
@@ -1564,7 +1918,12 @@ pub(super) fn result(app: &mut FilmcraftApp, ui: &mut egui::Ui) {
         }
         _ => {
             if let Some(capture) = captures.get(frame) {
-                reverse_engineering::selected_picture(app, ui, capture, reserve);
+                match max_size {
+                    Some(size) => {
+                        ui.allocate_ui(size, |ui| reverse_engineering::selected_picture(app, ui, capture, 0.0));
+                    }
+                    None => reverse_engineering::selected_picture(app, ui, capture, reserve),
+                }
             }
             if report.is_some() {
                 ui.label("Rendering the analysed frame…");
@@ -1629,5 +1988,54 @@ fn overlay_matches(ui: &egui::Ui, report: &FeatureReport, frame: usize, rect: eg
             egui::FontId::proportional(11.0),
             egui::Color32::from_rgb(80, 220, 230),
         );
+    }
+}
+
+#[cfg(test)]
+mod verdict_tests {
+    use super::*;
+    use filmcraft_time::FrameRate;
+
+    fn pose(frame: usize, dx: f64, scale: f64, residual: f64) -> FramePose {
+        FramePose { frame, transform: [scale, 0.0, dx, 0.0], displacement_px: [dx, 0.0], scale, rotation_degrees: 0.0, residual_px: residual }
+    }
+
+    #[test]
+    fn verdict_names_still_stretches_pans_shakes_gaps_and_doubtful_frames() {
+        let rate = FrameRate::FPS_24;
+        let mut states = vec![CameraState::Static; 24];
+        states.extend(std::iter::repeat_n(CameraState::Moving, 24));
+        states.extend(std::iter::repeat_n(CameraState::Static, 24));
+        let mut trajectory: Vec<FramePose> = (0..=24).map(|i| pose(i, 0.0, 1.0, 0.0)).collect();
+        trajectory.extend((25..=48).map(|i| pose(i, (i - 24) as f64 * 2.0, 1.0, if i == 30 { 3.0 } else { 0.0 })));
+        trajectory.extend((49..=72).map(|i| pose(i, 48.0, 1.0, 0.0)));
+        let size = [1920, 1080];
+        let v = verdict(&states, &trajectory, rate, 3.0, size);
+        assert_eq!(
+            v.headline,
+            "Camera: static shot for 1.0 s (0.0–1.0 s); then slow pan or truck right across 8 % of the frame over 1.0 s (1.0–2.0 s); then static shot for 1.0 s (2.0–3.0 s)."
+        );
+        assert!(v.quality.starts_with("100 % of frames with solid evidence · 1 doubtful frame (1.2 s)"), "{}", v.quality);
+        assert!(v.quality.ends_with("3.0 s analysed"), "{}", v.quality);
+
+        let mut states = vec![CameraState::Static; 24];
+        states.extend(std::iter::repeat_n(CameraState::Moving, 6));
+        states.extend(std::iter::repeat_n(CameraState::Static, 24));
+        let trajectory: Vec<FramePose> = (0..=54).map(|i| pose(i, if (25..=30).contains(&i) { 0.3 } else { 0.0 }, 1.0, 0.0)).collect();
+        let v = verdict(&states, &trajectory, rate, 1.0, size);
+        assert!(v.headline.contains("then handheld shake for 0.2 s"), "{}", v.headline);
+
+        let mut states = vec![CameraState::Moving; 48];
+        states.extend(std::iter::repeat_n(CameraState::NoEvidence, 12));
+        let trajectory: Vec<FramePose> = (0..=60).map(|i| pose(i, 0.0, 1.0 + 0.005 * i.min(48) as f64, 0.0)).collect();
+        let v = verdict(&states, &trajectory, rate, 1.0, size);
+        assert!(v.headline.starts_with("Camera: steady zoom or dolly in by 24 % over 2.0 s (0.0–2.0 s); then no camera evidence for 0.5 s"), "{}", v.headline);
+        assert!(v.quality.contains("80 % of frames with solid evidence") && v.quality.contains("12 frames without evidence"), "{}", v.quality);
+
+        let states = [CameraState::Static, CameraState::Unverified, CameraState::Static];
+        let trajectory: Vec<FramePose> = (0..=3).map(|i| pose(i, 0.0, 1.0, 0.0)).collect();
+        assert_eq!(verdict(&states, &trajectory, rate, 1.0, size).headline, "Camera: static shot for 0.1 s (0.0–0.1 s).");
+        assert_eq!(verdict(&[], &[], rate, 1.0, size).headline, "Not analysed yet");
+        assert_eq!(verdict(&states, &trajectory[..2], rate, 1.0, size).headline, "Not analysed yet");
     }
 }

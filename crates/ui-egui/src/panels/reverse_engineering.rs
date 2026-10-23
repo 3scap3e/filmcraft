@@ -144,6 +144,31 @@ pub fn command(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, params: &V
     }
     if matches!(
         id,
+        "reverseEngineering.runLook"
+            | "reverseEngineering.cancelLook"
+            | "reverseEngineering.setLookOptions"
+            | "reverseEngineering.lookShot"
+            | "reverseEngineering.exportLook"
+            | "reverseEngineering.applyLook"
+            | "reverseEngineering.chooseLookFile"
+            | "reverseEngineering.copyLookDescription"
+    ) {
+        return super::reverse_look::command(app, ctx, id, params);
+    }
+    if matches!(
+        id,
+        "reverseEngineering.runSound"
+            | "reverseEngineering.cancelSound"
+            | "reverseEngineering.setSoundOptions"
+            | "reverseEngineering.soundShot"
+            | "reverseEngineering.exportSound"
+            | "reverseEngineering.copySoundDescription"
+            | "reverseEngineering.soundBeatMarkers"
+    ) {
+        return super::reverse_sound::command(app, ctx, id, params);
+    }
+    if matches!(
+        id,
         "reverseEngineering.runFeatures"
             | "reverseEngineering.cancelFeatures"
             | "reverseEngineering.setFeatureOptions"
@@ -152,6 +177,7 @@ pub fn command(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, params: &V
             | "reverseEngineering.exportCamera"
             | "reverseEngineering.applyCamera"
             | "reverseEngineering.exportComponent"
+            | "reverseEngineering.copyDescription"
     ) {
         return super::reverse_camera2d::command(app, ctx, id, params);
     }
@@ -159,6 +185,8 @@ pub fn command(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, params: &V
         || super::reverse_sam::is_running(ctx)
         || super::reverse_shots::is_running(ctx)
         || super::reverse_camera2d::is_running(ctx)
+        || super::reverse_look::is_running(ctx)
+        || super::reverse_sound::is_running(ctx)
     {
         return Err("Cancel the running analysis before changing the range or tools".into());
     }
@@ -423,6 +451,8 @@ pub(super) fn frame_strip(app: &mut FilmcraftApp, ui: &mut egui::Ui, captures: &
     let busy = super::reverse_tracking::is_running(ui.ctx())
         || super::reverse_sam::is_running(ui.ctx())
         || super::reverse_shots::is_running(ui.ctx())
+        || super::reverse_look::is_running(ui.ctx())
+        || super::reverse_sound::is_running(ui.ctx())
         || super::reverse_camera2d::is_running(ui.ctx());
     let cell_width = 84.0;
     let sam = app.ui.panels.reverse_engineering.active_tool == "objectMasks";
@@ -493,6 +523,8 @@ pub fn timeline_range(
         || super::reverse_tracking::is_running(ui.ctx())
         || super::reverse_sam::is_running(ui.ctx())
         || super::reverse_shots::is_running(ui.ctx())
+        || super::reverse_look::is_running(ui.ctx())
+        || super::reverse_sound::is_running(ui.ctx())
         || super::reverse_camera2d::is_running(ui.ctx())
         || super::reverse_range::pending(ui.ctx());
     let Ok(clip) = selected_clip(app) else { return false };
@@ -614,9 +646,37 @@ pub(super) fn motion_is_current(app: &FilmcraftApp) -> bool {
 
 pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let bounds = rect.shrink2(vec2(12.0, 10.0));
+    if app.ui.panels.reverse_engineering.active_tool == "camera2d" && app.ui.panels.reverse_engineering.range_mode {
+        if let Ok(clip) = selected_clip(app) {
+            prepare_range(app, &clip);
+        }
+        super::reverse_tools::restore_saved(app, ui.ctx());
+        super::reverse_camera2d::page(app, ui, bounds);
+        super::reverse_range::show(app, ui.ctx());
+        return;
+    }
+    if app.ui.panels.reverse_engineering.active_tool == "look" && app.ui.panels.reverse_engineering.range_mode {
+        if let Ok(clip) = selected_clip(app) {
+            prepare_range(app, &clip);
+        }
+        super::reverse_tools::restore_saved(app, ui.ctx());
+        super::reverse_look::page(app, ui, bounds);
+        super::reverse_range::show(app, ui.ctx());
+        return;
+    }
+    if app.ui.panels.reverse_engineering.active_tool == "sound" && app.ui.panels.reverse_engineering.range_mode {
+        if let Ok(clip) = selected_clip(app) {
+            prepare_range(app, &clip);
+        }
+        super::reverse_tools::restore_saved(app, ui.ctx());
+        super::reverse_sound::page(app, ui, bounds);
+        super::reverse_range::show(app, ui.ctx());
+        return;
+    }
     let inspect_motion = app.ui.panels.reverse_engineering.range_mode && super::reverse_tools::results_visible(app, ui.ctx());
-    let gap = 12.0f32.min(bounds.width().max(0.0));
-    let left_width = ((bounds.width() - gap).max(0.0) * 0.40).max(1.0);
+    let menu_only = app.ui.panels.reverse_engineering.range_mode && app.ui.panels.reverse_engineering.active_tool == "menu";
+    let gap = if menu_only { 0.0 } else { 12.0f32.min(bounds.width().max(0.0)) };
+    let left_width = if menu_only { bounds.width().max(1.0) } else { ((bounds.width() - gap).max(0.0) * 0.40).max(1.0) };
     let controls = Rect::from_min_max(bounds.min, egui::pos2(bounds.left() + left_width, bounds.bottom()));
     let results = Rect::from_min_max(egui::pos2(controls.right() + gap, bounds.top()), bounds.max);
     let mut child = ui.new_child(egui::UiBuilder::new().max_rect(controls));
@@ -658,6 +718,8 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                             || super::reverse_tracking::is_running(ui.ctx())
                             || super::reverse_sam::is_running(ui.ctx())
                             || super::reverse_shots::is_running(ui.ctx())
+                            || super::reverse_look::is_running(ui.ctx())
+                            || super::reverse_sound::is_running(ui.ctx())
                             || super::reverse_camera2d::is_running(ui.ctx())),
                         |ui| {
                             ui.vertical(|ui| {
@@ -737,6 +799,10 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
             app.auto.add("reverseEngineering.timecode", response.rect, "Timestamp of the captured frame");
         }
     });
+    if menu_only {
+        super::reverse_range::show(app, ui.ctx());
+        return;
+    }
     let mut result_ui = ui.new_child(egui::UiBuilder::new().max_rect(results));
     result_ui.set_clip_rect(results.intersect(ui.clip_rect()));
     result_ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Wrap);
@@ -744,10 +810,6 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         super::reverse_shots::controls(app, &mut result_ui);
         result_ui.separator();
         super::reverse_shots::result(app, &mut result_ui);
-    } else if app.ui.panels.reverse_engineering.active_tool == "camera2d" && app.ui.panels.reverse_engineering.range_mode {
-        super::reverse_camera2d::controls(app, &mut result_ui);
-        result_ui.separator();
-        super::reverse_camera2d::result(app, &mut result_ui);
     } else if inspect_motion {
         if app.ui.panels.reverse_engineering.active_tool == "discontinuities" {
             super::reverse_discontinuities::graph(app, &mut result_ui);

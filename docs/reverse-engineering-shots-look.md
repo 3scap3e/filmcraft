@@ -20,6 +20,16 @@ warm bias), then detects shots:
   distance against the previous frame are within the held-frame tolerance counts as a duplicate.
   Each shot reports unique frames, held frames and the hold fraction; the panel converts them to
   "about N fps of new drawings", which is how animation on 2s or 3s shows up.
+- **Dissolve**: a gradual transition. Over a window of `dissolveMinFrames`–`dissolveMaxFrames`
+  frames (default 3–72) the whole-frame statistics travel from one place to another: the sum of
+  the changes in mean luma, warm bias and saturation between the frame before the window and its
+  last frame is at least `dissolveShift` (default 0.25), and the frame-to-frame statistics do not
+  wander more than twice that distance on the way (a handheld or panning shot wanders; a blend
+  travels). Windows that touch a cut, a black frame or the rising/falling frames of a fade from or
+  to black are not dissolves. Overlapping windows keep the one with the largest shift, trimmed to
+  the frames where the statistics actually move; the boundary sits at the middle of the dissolve
+  and the shot records `transitionFrames`, its length. Cross dissolves, fades through a colour and
+  wipes all read this way; a hard cut followed by a slow pan does not.
 - Shots shorter than the minimum shot length merge into the previous shot.
 
 After detection the middle frame of every visible shot is rendered again at 320 pixels and
@@ -37,11 +47,11 @@ stored signatures without re-reading the frames; only keyframes without a cached
 rendered again.
 
 Commands: `reverseEngineering.runShots`, `reverseEngineering.cancelShots`,
-`reverseEngineering.setShotOptions {"cutThreshold":0.3,"adaptiveRatio":3,"minShotFrames":3,"blackLuma":0.04,"duplicateTolerance":0.004,"paletteSize":8}`
+`reverseEngineering.setShotOptions {"cutThreshold":0.3,"adaptiveRatio":3,"minShotFrames":3,"blackLuma":0.04,"duplicateTolerance":0.004,"dissolveShift":0.25,"dissolveMinFrames":3,"dissolveMaxFrames":72,"paletteSize":8}`
 and `reverseEngineering.shotSelect {"index":0}`. The result lives at
 `ui.panels.reverseEngineering.shots`; schema version 1, analyzer `filmcraft-vision/shots-and-look-v1`,
 with every frame's change record, every shot and one optional look per shot. Automation ids:
-`reverseEngineering.runShots`, `reverseEngineering.shots.{cutThreshold,adaptiveRatio,minShotFrames,blackLuma,duplicateTolerance,paletteSize,summary,bar,jump,First,Previous,Next,Last}`,
+`reverseEngineering.runShots`, `reverseEngineering.shots.{cutThreshold,adaptiveRatio,minShotFrames,blackLuma,duplicateTolerance,dissolveShift,dissolveMinFrames,dissolveMaxFrames,paletteSize,summary,bar,jump,First,Previous,Next,Last}`,
 `reverseEngineering.shots.shot.N`, `reverseEngineering.shots.thumbnail.N`, `reverseEngineering.shots.palette.N`.
 
 Limitations: dissolves, flashes, strobing and whip pans can be missed or over-split; a black
@@ -83,16 +93,19 @@ wrong labels; no physical pose, focal length or dolly/pan separation is recovere
 On the tool menu, **Export AI brief (Markdown + JSON)** writes a per-shot breakdown built only
 from measured results and user labels: the shot table, and for every shot its timing, boundary,
 cadence, tone, colour, palette, pixel grid, black bars, camera segments overlapping the shot,
-named SAM objects present in the shot (with rule-of-thirds position words and mean area), and a
-one-line `prompt` scaffold. The JSON file next to it holds the same `BriefInput` for programs.
+named SAM objects present in the shot (with rule-of-thirds position words and mean area), its
+sound (kind shares, dominant kind, mean loudness, beats and dialogue lines), and a one-line
+`prompt` scaffold. A **Sound** section before the limitations gives the whole range's loudness,
+mix, tempo and cuts on beats. The JSON file next to it holds the same `BriefInput` for programs.
 
-It needs a Shots & look result for the selected range (current or saved). Camera moves and
-object masks are added when a current or saved result for the same range exists. Command:
+It needs a Shots & look result for the selected range (current or saved). Camera moves, object
+masks and the [Sound](reverse-engineering-sound.md) result are added when a current or saved
+result for the same range exists; the export's reply says which (`"camera"`, `"sound"`). Command:
 `reverseEngineering.exportBrief {"path":"/absolute/breakdown.md"}`; the JSON goes to the same
 path with a `.json` extension.
 
 The brief is a reconstruction, not the creator's intent, script or prompt, and it says so in its
-limitations section. Text on screen, dialogue, music and depth are not measured yet; see
+limitations section. Text on screen, music stems and depth are not measured yet; see
 [the roadmap](reverse-engineering-roadmap.md).
 
 ## Verification
@@ -105,4 +118,5 @@ camera label and segment merge, brief rendering, and hostile inputs for each fun
 real renderer on the first 60 frames of the demo project: it checks that shots partition the
 range, that black shots have no look and visible shots have a bounded palette, shot selection and
 playhead movement, invalid options, palette re-detection without re-reading frames, the brief
-export (Markdown and JSON), saving, and that the project is unchanged.
+export (Markdown and JSON) before and after a sound analysis, saving, and that the project is
+unchanged.

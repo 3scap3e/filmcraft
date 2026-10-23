@@ -2,9 +2,10 @@
 //! was applied (a 2D camera for now), on which clip and when, where it came from, which effect
 //! parameters it wrote, and a per-frame summary of its path so the editor can draw it and mark
 //! where the motion changes.
-use crate::{ClipId, bounded_time_range};
+use crate::{ClipId, ParamValue, bounded_time_range};
 use filmcraft_time::Tick;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 
 pub const MAX_COMPONENT_SAMPLES: usize = 36_000;
 
@@ -15,12 +16,15 @@ pub struct ComponentId(pub u64);
 #[serde(rename_all = "camelCase")]
 pub enum ComponentKind {
     Camera2d,
+    /// A grade written as Lumetri Color parameters.
+    Look,
 }
 
 impl ComponentKind {
     pub fn label(self) -> &'static str {
         match self {
             ComponentKind::Camera2d => "2D camera",
+            ComponentKind::Look => "Look",
         }
     }
 }
@@ -114,11 +118,41 @@ pub struct AppliedComponent {
     pub source: ComponentSource,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub samples: Vec<ComponentSample>,
+    /// The camera in cinema terms, one sentence, as the analysis described it when applied.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub summary: String,
+    /// False while the component is bypassed: its effect is switched off so the picture shows
+    /// without it, and switched back on when the component is enabled again.
+    #[serde(default = "component_enabled_default")]
+    pub enabled: bool,
+    /// The values the written static parameters had before, so removing the component puts
+    /// them back (keyframed parameters restore themselves).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub previous: BTreeMap<String, ParamValue>,
+    /// The component covers its whole clip and moves with it (a look on an adjustment layer): the
+    /// lane shows the clip's current span, not the span recorded when it was applied.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub follows_clip: bool,
+}
+
+fn component_enabled_default() -> bool {
+    true
 }
 
 impl AppliedComponent {
     pub fn end(&self) -> Tick {
         self.start + self.duration
+    }
+
+    /// Where the component is on the timeline now: its clip's span when it follows the clip,
+    /// else the span recorded when it was applied.
+    pub fn span(&self, seq: &crate::Sequence) -> (Tick, Tick) {
+        if self.follows_clip
+            && let Some((_, it)) = seq.find_item(self.clip)
+        {
+            return (it.start, it.duration);
+        }
+        (self.start, self.duration)
     }
 
     pub fn check(&self) -> Result<(), String> {
@@ -198,6 +232,10 @@ mod tests {
             effect: "motion".into(),
             params: vec!["position".into()],
             source: ComponentSource::default(),
+            summary: String::new(),
+            enabled: true,
+            previous: BTreeMap::new(),
+            follows_clip: false,
             samples: vec![
                 sample(0, 0.0, None, 0.0),
                 sample(100, 0.0, Some("static"), 0.0),
